@@ -46,7 +46,7 @@ We believe AI should be:
 ### 1. Specialized Agents (7B Models)
 - **Dev Agent**: Code generation, debugging, refactoring
 - **Logic Agent**: Reasoning, planning, problem decomposition  
-- **Domain Expert**: Specialized knowledge (Bitcoin, Lightning, etc.)
+- **Domain Expert**: Specialized knowledge (Coding, Encryption,Bitcoin, Lightning, etc.)
 - **Reflection Agent**: Quality control and iterative improvement
 
 ### 2. Orchestrator
@@ -105,7 +105,7 @@ We believe AI should be:
 
 ```bash
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/ericscalibur/Rain.git
 cd Rain
 
 # Install Ollama
@@ -116,7 +116,68 @@ ollama pull llama3.1:7b
 ollama pull codellama:7b
 
 # Run Rain
-python rain.py
+python3 rain.py "Your question here"
+```
+
+## System Prompts - Customize Rain's Personality
+
+Rain's most powerful feature is its ability to transform into specialized AI experts through system prompts. Instead of one generic AI, you get infinite customized personalities.
+
+### Available Personalities
+
+```bash
+# Bitcoin maximalist focused on sound money and Austrian economics
+python3 rain.py --system-file system-prompts/bitcoin-maximalist.txt --interactive
+
+# Master full-stack developer with modern web expertise  
+python3 rain.py --system-file system-prompts/fullstack-dev.txt --interactive
+
+# Cybersecurity expert and ethical hacker
+python3 rain.py --system-file system-prompts/cybersec-whitehat.txt --interactive
+
+# AI philosopher exploring consciousness and ethics
+python3 rain.py --system-file system-prompts/ai-philosopher.txt --interactive
+
+# Business strategist and entrepreneur advisor
+python3 rain.py --system-file system-prompts/business-strategist.txt --interactive
+```
+
+### Custom System Prompts
+
+Create your own AI personalities:
+
+```bash
+# Use a custom system prompt directly
+python3 rain.py --system-prompt "You are a creative writing mentor..." --interactive
+
+# Create and save your own personality file
+echo "You are Rain, a [YOUR SPECIALTY] expert..." > my-rain-personality.txt
+python3 rain.py --system-file my-rain-personality.txt --interactive
+```
+
+See the `system-prompts/` directory for examples and templates to create your own specialized Rain personalities.
+
+## Usage Examples
+
+### Basic Usage
+```bash
+# Single question
+python3 rain.py "Explain quantum computing"
+
+# Interactive chat mode
+python3 rain.py --interactive
+
+# See Rain's thinking process
+python3 rain.py "Complex question" --verbose
+```
+
+### Advanced Features
+```bash
+# Custom reflection settings
+python3 rain.py --iterations 5 --confidence 0.9 "Hard problem"
+
+# Combine personality with custom settings
+python3 rain.py --system-file system-prompts/ai-philosopher.txt "What is consciousness?" --verbose
 ```
 
 ## Why "Rain"?
@@ -127,8 +188,6 @@ Rain symbolizes everything we believe AI should be:
 - **Essential** - Fundamental to life and progress
 - **Natural** - Flows where it's needed most
 - **Renewable** - Infinite, sustainable resource
-
-Plus, it contains "AI" right in the name! 🌧️
 
 ## Contributing
 
