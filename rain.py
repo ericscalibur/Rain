@@ -102,6 +102,7 @@ class RainMemory:
                    LEFT JOIN messages m ON s.id = m.session_id
                    WHERE s.id != ? AND s.ended_at IS NOT NULL
                    GROUP BY s.id
+                   HAVING message_count > 0
                    ORDER BY s.started_at DESC
                    LIMIT ?""",
                 (self.session_id, limit)
