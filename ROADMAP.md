@@ -33,51 +33,61 @@ The north star is this: *Rain should feel like working with a brilliant colleagu
 
 ---
 
-## Current State (as of February 2025)
+## Current State (as of June 2025)
 
 ### What exists and works:
-- Single model recursive reflection via Ollama
+- Full local web UI at `http://localhost:7734` — dark theme, streaming responses, session history sidebar
+- FastAPI backend (`server.py`) serving Rain's multi-agent pipeline over HTTP with Server-Sent Events
+- Multi-agent routing always on — Dev Agent, Logic Agent, Domain Expert, Reflection Agent, Synthesizer
+- Syntax highlighted code blocks with copy button in the web UI
+- File attachment via drag-and-drop (full window) or paperclip button — supports `.py`, `.js`, `.ts`, `.html`, `.css`, `.json`, `.md`, `.rs`, `.go`, and more
+- File content prepended to query automatically; Rain analyzes and debugs uploaded files
+- Session history sidebar — click any past session to replay it
+- Empty sessions automatically filtered from sidebar
+- Sandbox toggle in UI — enables sandboxed Python/Node.js execution per request
+- Persistent memory across sessions via local SQLite (`~/.rain/memory.db`)
 - Code detection - recognizes code input and handles it differently from natural language
-- Animated spinner during model inference
-- Ctrl+C to interrupt a running query
-- Ctrl+D to submit multi-line code blocks
-- Logic loop detection - breaks out when responses stop improving
-- `--file` flag with optional `--query` for targeted file analysis
+- Ctrl+C to interrupt, Ctrl+D to submit multi-line code blocks (CLI)
+- Logic loop detection — breaks out when responses stop improving
+- `--file` flag with optional `--query` for targeted file analysis (CLI)
 - `--verbose` mode to watch reflection iterations in real time
-- `--interactive` mode for conversational use
+- `--interactive` mode for conversational use (CLI)
 - System prompt support via `--system-prompt` or `--system-file`
 - Multiple personality profiles in `system-prompts/`
+- `--agents` flag shows roster and model assignments
+- ⛈️ emoji favicon via SVG data URI — no PNG required
 
 ### What is promised but not yet built:
-- Multi-agent architecture (Dev Agent, Logic Agent, Domain Expert)
-- Web interface
-- Fine-tuning pipeline
+- Fine-tuning pipeline via LoRA adapters
+- Semantic/vector memory (embeddings-based recall)
+- Autonomous agent mode with task decomposition
 - Model marketplace
 
-### What was just completed (Phase 3 — Multi-Agent Architecture):
+### What was just completed (Phase 4 — Web Interface):
+- FastAPI backend at `localhost:7734` with SSE streaming
+- Clean dark-theme chat UI — feels like a native AI tool, runs entirely locally
+- Real-time multi-agent progress indicators (routing, reflection, synthesis stages visible)
+- Syntax highlighted code blocks with one-click copy
+- Drag-and-drop file upload for debugging — drop any source file, Rain analyzes it
+- Session history sidebar with clickable replay
+- Sandbox toggle (per-request, no restart needed)
+- Confidence badge and duration on every response
+- ⛈️ favicon, zero cloud, zero tracking
+
+### What was completed before that (Phase 3 — Multi-Agent Architecture):
 - Multi-agent routing is always on — no flag required
 - Dev Agent, Logic Agent, Domain Expert with specialized system prompts
 - Reflection Agent runs on every query, rates quality, triggers synthesis when needed
 - Synthesizer fires conditionally — only on NEEDS_IMPROVEMENT or POOR ratings
 - Graceful fallback to `llama3.1` with prompt specialization when better models aren't installed
-- `--agents` flag shows roster and model assignments
 - Combined with `--sandbox`: multi-agent catches logic errors, sandbox catches runtime errors
 
-### What was completed before that (Phase 2 — Code Execution Sandbox):
-- `--sandbox` / `-s` flag enables sandboxed code execution
-- Rain runs suggested code in a throwaway temp directory before returning it
-- Self-correction loop: up to 3 attempts, model sees the real error and fixes it
-- Smart error classification: targeted guidance for missing modules, network errors, timeouts, filesystem errors
-- Python and JavaScript (Node.js) supported
-- stdlib-only constraint communicated to model when pip packages are missing
-- Network errors trigger mock-data fallback guidance
-
 ### Known issues to be aware of:
-- Pasting very large files in interactive mode can fragment input - use `--file` instead
+- Pasting very large files in interactive mode can fragment input — use `--file` or the web UI drag-and-drop instead
 - Confidence scoring for code is heuristic-based, not semantic
 - The `_clean_response` method is aggressive and may strip valid content in edge cases
-- Single model means no true specialization yet
 - Sandbox cannot verify code that requires real network access (by design) — try/except wrappers will pass even if the live API call would fail
+- File upload is text-only, max 500KB — binary files and images not yet supported
 
 ---
 
@@ -182,34 +192,27 @@ Rain routes every query to the most appropriate specialized agent. A reflection 
 
 ---
 
-### Phase 4: Web Interface ⭐ START HERE
+### Phase 4: Web Interface ✅ COMPLETE
 *Rain should be accessible, not just powerful. The CLI is great for developers but limits Rain's reach. A local web interface makes Rain usable by anyone.*
 
-The CLI is great for developers but limits Rain's reach. A local web interface makes Rain usable by anyone.
+**What was built:**
+- FastAPI backend (`server.py`) serving Rain's multi-agent pipeline as a streaming REST API
+- Clean dark-theme chat UI at `http://localhost:7734` — no React, no build step, vanilla JS
+- Server-Sent Events for real-time streaming — routing, reflection, and synthesis stages all visible as they happen
+- Syntax highlighted code blocks with one-click copy button
+- Session history sidebar — all past sessions clickable and replayable
+- Empty sessions automatically filtered out
+- Drag-and-drop file upload (full window overlay) + paperclip attach button
+- File badge in input area with dismiss — file content prepended to query on send
+- Sandbox toggle in UI — enables sandboxed code execution per request, no restart needed
+- Confidence badge and duration displayed on every Rain response
+- ⛈️ emoji favicon via inline SVG data URI
+- `./rain-web` launcher script
 
-**What to build:**
-- Simple Flask or FastAPI backend serving Rain's capabilities as a REST API
-- Clean, minimal web UI - think conversation interface, not dashboard
-- Syntax highlighted code blocks in responses
-- Session history sidebar
-- Model selector dropdown
-- System prompt selector
-
-**What success looks like:**
+**What success looks like:** ✅
 - Navigate to `http://localhost:7734` in any browser
 - Chat interface that feels as natural as any web AI tool
-- But running entirely locally, zero cloud, zero tracking
-
-**Technical approach:**
-- FastAPI backend - lightweight, async, well documented
-- Vanilla JS or minimal framework for frontend - no React overhead
-- Server-Sent Events for streaming responses
-- Store sessions in the same SQLite database from Phase 1
-
-**Design philosophy:**
-- Keep it minimal. Rain's power is in its intelligence, not its UI.
-- Dark theme by default - developers prefer it
-- The interface should feel like a tool, not a product
+- Running entirely locally, zero cloud, zero tracking
 
 ---
 
