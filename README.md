@@ -1,6 +1,6 @@
 # Rain ⛈️ - Sovereign AI Ecosystem
 
-> **Status: Phase 3 Complete** — Multi-agent routing is live. Rain thinks with specialized agents. ⛈️🤖
+> **Status: Phase 5A Complete** — Semantic memory is live. Rain retrieves relevant past exchanges by meaning, not just recency. ⛈️🧠
 
 *"Be like rain - essential, unstoppable, and free."*
 
@@ -100,14 +100,30 @@ We believe AI should be:
 ### Hardware
 - **Minimum**: 16GB RAM, 4-core CPU
 - **Recommended**: 32GB RAM, 8-core CPU
-- **Storage**: 50GB+ for model storage
+- **Storage**: See model breakdown below
 - **Network**: None required (fully offline)
+
+### Model Storage Requirements
+
+| Model | Role | Size | Required |
+|---|---|---|---|
+| `llama3.1:latest` | Base model / fallback for all agents | 4.9 GB | ✅ Yes |
+| `nomic-embed-text:latest` | Semantic memory embeddings (Phase 5A) | 274 MB | ✅ Yes |
+| `codellama:7b` | Dev Agent — code generation & debugging | 3.8 GB | Recommended |
+| `mistral:7b` | Logic, Domain, Reflection, Synthesizer agents | 4.1 GB | Recommended |
+
+**Minimum install** (base only): ~5.2 GB
+**Full recommended stack**: ~13.1 GB
+**Disk headroom for memory DB + sessions**: negligible (SQLite, typically <100 MB)
+
+Rain runs on `llama3.1` alone if nothing else is installed — specialized models are automatic upgrades, not hard requirements.
 
 ### Software Stack
 - **Runtime**: Ollama (local model management)
-- **Models**: Multiple 7B parameter models
-- **Language**: Python/Node.js orchestration layer
-- **Interface**: CLI, API, and web interface
+- **Models**: `llama3.1`, `codellama`, `mistral`, `nomic-embed-text`
+- **Language**: Python 3.10+ orchestration layer
+- **Interface**: CLI, FastAPI backend, and local web UI at `localhost:7734`
+- **Memory**: SQLite at `~/.rain/memory.db` — sessions, messages, and embedding vectors
 
 ## Development Roadmap
 
@@ -143,14 +159,27 @@ We believe AI should be:
 - [x] `--agents` flag to inspect roster, `--single-agent` legacy escape hatch
 - [x] Multi-agent is the default — no flag required
 
-### Phase 4: Web Interface ⭐ NEXT
-- [ ] Local FastAPI backend
-- [ ] Clean minimal chat UI at localhost:7734
-- [ ] Syntax highlighted code blocks
-- [ ] Session history sidebar
+### Phase 4: Web Interface ✅ COMPLETE
+- [x] Local FastAPI backend (`server.py`) with Server-Sent Events streaming
+- [x] Clean dark-theme chat UI at `localhost:7734` — vanilla JS, no build step
+- [x] Syntax highlighted code blocks with one-click copy
+- [x] Session history sidebar — clickable, replayable, empty sessions filtered
+- [x] Drag-and-drop file upload + paperclip attach button
+- [x] Sandbox toggle per-request in the UI
+- [x] Confidence badge and duration on every response
+- [x] ⛈️ emoji favicon, `./rain-web` launcher script
 
-### Phase 5: Self-Improvement
-- [ ] Feedback mechanism (mark responses good/bad)
+### Phase 5: Semantic Memory + Self-Improvement
+#### Phase 5A: Semantic Memory ✅ COMPLETE
+- [x] `nomic-embed-text` via Ollama HTTP API — local embeddings, zero new pip deps
+- [x] `vectors` table in SQLite — embeddings stored alongside messages, background threaded
+- [x] `semantic_search()` — cosine similarity, pure stdlib, no numpy
+- [x] Three-tier memory context: episodic summaries + working memory + semantic retrieval
+- [x] Tier 3 injects top-3 most relevant past exchanges into every agent prompt by meaning, not recency
+
+#### Phase 5B: Self-Improvement ⭐ NEXT
+- [ ] Feedback mechanism (mark responses good/bad inline in web UI)
+- [ ] Correction capture — save input/output pairs when user corrects Rain
 - [ ] Fine-tuning pipeline via LoRA adapters
 - [ ] A/B testing between base and fine-tuned models
 
