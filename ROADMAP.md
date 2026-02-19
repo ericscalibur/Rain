@@ -95,14 +95,6 @@ The north star is this: *Rain should feel like working with a brilliant colleagu
 
 ### Phase 1: Memory ✅ COMPLETE
 
-### Phase 2: Code Execution Sandbox ✅ COMPLETE
-
-### Phase 3: True Multi-Agent Architecture ✅ COMPLETE
-
----
-
-### Phase 1: Memory ✅ COMPLETE
-
 Rain currently forgets everything between sessions. This is the single biggest gap between what Rain is and what it should be. Fix this first because everything else builds on it.
 
 **What to build:**
