@@ -1,0 +1,21 @@
+#!/bin/sh
+# Rain ⛈️ - Web Interface Launcher
+# Usage: ./rain-web
+
+# Find the directory this script lives in
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+cd "$DIR"
+
+if [ ! -d ".venv" ]; then
+  echo "❌ Virtual environment not found."
+  echo "   Run: python3 -m venv .venv && .venv/bin/pip install fastapi uvicorn"
+  exit 1
+fi
+
+echo ""
+echo "  ⛈️  Rain Web Interface  ⛈️"
+echo "  http://localhost:7734"
+echo ""
+
+exec .venv/bin/python server.py

@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""
+Rain ⛈️ - Web Server (Phase 4)
+
+FastAPI backend serving Rain's multi-agent capabilities via HTTP.
+Runs entirely locally at http://localhost:7734
+Zero cloud. Zero tracking. Fully sovereign.
+
+Usage:
+    .venv/bin/uvicorn server:app --host 127.0.0.1 --port 7734 --reload
+"""
+
+import asyncio
+import json
+import sys
+import threading
+import time
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import AsyncGenerator, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+# Add Rain's directory to path so we can import rain.py
+sys.path.insert(0, str(Path(__file__).parent))
+
+from rain import (
+    MultiAgentOrchestrator,
+    RainMemory,
+    AgentType,
+    CodeSandbox,
+)
+
+# ── App ────────────────────────────────────────────────────────────────
+
+# ── Global orchestrator (initialized once on startup) ──────────────────
+
+_orchestrator: Optional[MultiAgentOrchestrator] = None
+_memory: Optional[RainMemory] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize Rain on startup, clean up on shutdown."""
+    global _orchestrator, _memory
+    _memory = RainMemory()
+    _memory.start_session(model="llama3.1")
+    _orchestrator = MultiAgentOrchestrator(
+        default_model="llama3.1",
+        memory=_memory,
+        sandbox_enabled=False,  # user can toggle per request
+    )
+    yield
+    if _memory:
+        _memory.end_session()
+
+
+app = FastAPI(
+    title="Rain",
+    description="Sovereign AI Ecosystem — local web interface",
+    version="0.4.0",
+    docs_url=None,   # disable swagger UI (keep it minimal)
+    redoc_url=None,
+    lifespan=lifespan,
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+# ── Request / Response models ──────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+    sandbox: bool = False
+    sandbox_timeout: int = 10
+    verbose: bool = False
+
+
+class SessionSummary(BaseModel):
+    id: str
+    started_at: str
+    ended_at: Optional[str]
+    summary: Optional[str]
+    model: Optional[str]
+    message_count: int
+
+
+# ── Routes ─────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the single-page UI."""
+    html_path = Path(__file__).parent / "static" / "index.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="UI not found — static/index.html missing")
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/health")
+async def health():
+    """Health check — confirms server and Ollama are reachable."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ollama", "list"], capture_output=True, text=True, timeout=5
+        )
+        ollama_ok = result.returncode == 0
+    except Exception:
+        ollama_ok = False
+
+    return {
+        "status": "ok",
+        "ollama": ollama_ok,
+        "model": _orchestrator.default_model if _orchestrator else None,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/models")
+async def list_models():
+    """Return installed Ollama models."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ollama", "list"], capture_output=True, text=True, timeout=5
+        )
+        models = []
+        for line in result.stdout.strip().split("\n")[1:]:
+            if line.strip():
+                parts = line.split()
+                models.append({
+                    "name": parts[0],
+                    "size": parts[2] if len(parts) > 2 else "",
+                })
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/agents")
+async def get_agents():
+    """Return the current agent roster."""
+    if not _orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+
+    roster = []
+    for agent_type in [AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN,
+                       AgentType.REFLECTION, AgentType.SYNTHESIZER]:
+        agent = _orchestrator.agents[agent_type]
+        specialized = not agent.model_name.startswith(
+            _orchestrator.default_model.split(":")[0]
+        )
+        roster.append({
+            "type": agent.agent_type.value,
+            "description": agent.description,
+            "model": agent.model_name,
+            "specialized": specialized,
+        })
+
+    missing = []
+    from rain import AGENT_PREFERRED_MODELS
+    for agent_type, preferred in AGENT_PREFERRED_MODELS.items():
+        if agent_type in (AgentType.REFLECTION, AgentType.SYNTHESIZER, AgentType.GENERAL):
+            continue
+        best = preferred[0]
+        if not any(m.startswith(best.split(":")[0])
+                   for m in _orchestrator._installed_models):
+            missing.append(best)
+
+    return {
+        "roster": roster,
+        "suggestions": list(dict.fromkeys(missing)),
+    }
+
+
+@app.get("/api/sessions")
+async def get_sessions():
+    """Return recent session history."""
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    sessions = _memory.get_recent_sessions(limit=20)
+    return {"sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """Return all messages for a given session."""
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    import sqlite3
+    with sqlite3.connect(_memory.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT role, content, timestamp, is_code, confidence
+               FROM messages WHERE session_id = ?
+               ORDER BY timestamp ASC""",
+            (session_id,),
+        ).fetchall()
+    return {"messages": [dict(r) for r in rows]}
+
+
+@app.post("/api/forget")
+async def forget():
+    """Wipe all memory."""
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    _memory.forget_all()
+    return {"status": "ok", "message": "All memory wiped."}
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    """
+    Main chat endpoint. Returns a Server-Sent Events stream.
+
+    Each event is a JSON object with a `type` field:
+      { type: "routing",   agent: "Domain Expert ..." }
+      { type: "progress",  message: "Primary response ready..." }
+      { type: "progress",  message: "Reflection complete (rating: GOOD)" }
+      { type: "progress",  message: "Synthesizing improvements..." }
+      { type: "sandbox",   message: "Testing block 1/2...", status: "running" }
+      { type: "sandbox",   message: "✅ verified", status: "ok" }
+      { type: "done",      content: "...", confidence: 0.75, duration: 12.3,
+                           sandbox_verified: true, agent: "dev" }
+      { type: "error",     message: "..." }
+    """
+    if not _orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+
+    return StreamingResponse(
+        _stream_chat(req),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
+    """
+    Run the multi-agent pipeline in a thread and stream SSE events back
+    as each stage completes. Uses a queue to bridge the sync orchestrator
+    and the async SSE stream.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def emit(event: dict):
+        """Thread-safe event emitter — puts onto the asyncio queue."""
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def run_pipeline():
+        """Runs in a background thread — calls the synchronous orchestrator."""
+        try:
+            # Temporarily patch the orchestrator to emit SSE events at each stage
+            original_route = _orchestrator.router.route
+
+            def patched_route(query):
+                result = original_route(query)
+                emit({
+                    "type": "routing",
+                    "agent": _orchestrator.router.explain(result),
+                    "agent_type": result.value,
+                })
+                return result
+
+            _orchestrator.router.route = patched_route
+
+            # Configure sandbox for this request
+            _orchestrator.sandbox_enabled = req.sandbox
+            if req.sandbox:
+                _orchestrator.sandbox = CodeSandbox(timeout=req.sandbox_timeout)
+            else:
+                _orchestrator.sandbox = None
+
+            # Monkey-patch _query_agent to emit progress events
+            original_query_agent = _orchestrator._query_agent
+
+            def patched_query_agent(agent, prompt, label=None):
+                emit({"type": "progress", "message": f"💭 {label or agent.description + ' thinking...'}"})
+                result = original_query_agent(agent, prompt, label=label)
+                return result
+
+            _orchestrator._query_agent = patched_query_agent
+
+            # Monkey-patch reflection rating emit
+            original_parse_rating = _orchestrator._parse_reflection_rating
+
+            def patched_parse_rating(critique):
+                rating = original_parse_rating(critique)
+                emit({"type": "progress", "message": f"🔍 Reflection complete (rating: {rating})"})
+                return rating
+
+            _orchestrator._parse_reflection_rating = patched_parse_rating
+
+            # Run the full pipeline
+            result = _orchestrator.recursive_reflect(req.message, verbose=req.verbose)
+
+            # Restore originals
+            _orchestrator.router.route = original_route
+            _orchestrator._query_agent = original_query_agent
+            _orchestrator._parse_reflection_rating = original_parse_rating
+
+            if result:
+                sandbox_summary = None
+                if result.sandbox_results:
+                    verified = sum(1 for r in result.sandbox_results if r.success)
+                    total = len(result.sandbox_results)
+                    sandbox_summary = {
+                        "verified": verified,
+                        "total": total,
+                        "all_ok": verified == total,
+                    }
+
+                emit({
+                    "type": "done",
+                    "content": result.content,
+                    "confidence": round(result.confidence, 2),
+                    "duration": round(result.duration_seconds, 1),
+                    "iterations": result.iteration,
+                    "improvements": result.improvements,
+                    "sandbox": sandbox_summary,
+                })
+            else:
+                emit({"type": "error", "message": "No response from model."})
+
+        except Exception as e:
+            emit({"type": "error", "message": str(e)})
+        finally:
+            emit({"type": "_done_sentinel"})
+
+    # Start pipeline in background thread
+    thread = threading.Thread(target=run_pipeline, daemon=True)
+    thread.start()
+
+    # Stream events from queue until sentinel received
+    while True:
+        event = await queue.get()
+        if event.get("type") == "_done_sentinel":
+            break
+        yield f"data: {json.dumps(event)}\n\n"
+        await asyncio.sleep(0)  # yield control to event loop
+
+
+# ── Entry point ────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "server:app",
+        host="127.0.0.1",
+        port=7734,
+        reload=True,
+        log_level="warning",
+    )

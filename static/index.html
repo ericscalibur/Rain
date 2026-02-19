@@ -1,0 +1,1933 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Rain ⛈️</title>
+        <style>
+            /* ── Reset & Base ─────────────────────────────────────── */
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            :root {
+                --bg: #0d0d0d;
+                --bg-2: #141414;
+                --bg-3: #1a1a1a;
+                --bg-4: #222222;
+                --border: #2a2a2a;
+                --border-light: #333333;
+                --text: #e8e8e8;
+                --text-2: #a0a0a0;
+                --text-3: #666666;
+                --accent: #4a9eff;
+                --accent-dim: #1a3a5c;
+                --green: #3ddc84;
+                --green-dim: #1a3d2a;
+                --red: #ff5555;
+                --red-dim: #3d1a1a;
+                --yellow: #ffd700;
+                --yellow-dim: #3d3400;
+                --purple: #b388ff;
+                --radius: 8px;
+                --sidebar-w: 260px;
+                --font-mono:
+                    "SF Mono", "Fira Code", "Cascadia Code", "Consolas",
+                    monospace;
+                --font-sans:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+                    sans-serif;
+            }
+
+            html,
+            body {
+                height: 100%;
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--font-sans);
+                font-size: 14px;
+                line-height: 1.6;
+                overflow: hidden;
+            }
+
+            /* ── Layout ───────────────────────────────────────────── */
+            #app {
+                display: flex;
+                height: 100vh;
+                width: 100vw;
+            }
+
+            /* ── Sidebar ──────────────────────────────────────────── */
+            #sidebar {
+                width: var(--sidebar-w);
+                min-width: var(--sidebar-w);
+                background: var(--bg-2);
+                border-right: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                transition:
+                    width 0.2s ease,
+                    min-width 0.2s ease;
+            }
+
+            #sidebar.collapsed {
+                width: 0;
+                min-width: 0;
+                border-right: none;
+            }
+
+            .sidebar-header {
+                padding: 16px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .logo {
+                font-size: 20px;
+                line-height: 1;
+            }
+
+            .logo-text {
+                font-size: 16px;
+                font-weight: 700;
+                letter-spacing: -0.3px;
+                color: var(--text);
+            }
+
+            .logo-sub {
+                font-size: 10px;
+                color: var(--text-3);
+                letter-spacing: 1px;
+                text-transform: uppercase;
+            }
+
+            .sidebar-section {
+                padding: 12px 16px 6px;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                color: var(--text-3);
+            }
+
+            .sidebar-scroll {
+                flex: 1;
+                overflow-y: auto;
+                padding-bottom: 12px;
+            }
+
+            .sidebar-scroll::-webkit-scrollbar {
+                width: 4px;
+            }
+            .sidebar-scroll::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            .sidebar-scroll::-webkit-scrollbar-thumb {
+                background: var(--border-light);
+                border-radius: 2px;
+            }
+
+            .session-item {
+                padding: 8px 16px;
+                cursor: pointer;
+                border-left: 2px solid transparent;
+                transition:
+                    background 0.15s,
+                    border-color 0.15s;
+            }
+
+            .session-item:hover {
+                background: var(--bg-3);
+            }
+            .session-item.active {
+                background: var(--accent-dim);
+                border-left-color: var(--accent);
+            }
+
+            .session-date {
+                font-size: 10px;
+                color: var(--text-3);
+                margin-bottom: 2px;
+            }
+
+            .session-summary {
+                font-size: 12px;
+                color: var(--text-2);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .session-count {
+                font-size: 10px;
+                color: var(--text-3);
+                margin-top: 2px;
+            }
+
+            /* ── Agents panel ─────────────────────────────────────── */
+            .agent-item {
+                padding: 6px 16px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 12px;
+            }
+
+            .agent-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: var(--text-3);
+                flex-shrink: 0;
+            }
+
+            .agent-dot.specialized {
+                background: var(--green);
+            }
+            .agent-dot.prompt {
+                background: var(--accent);
+            }
+
+            .agent-name {
+                color: var(--text-2);
+                flex: 1;
+            }
+            .agent-model {
+                font-size: 10px;
+                color: var(--text-3);
+                font-family: var(--font-mono);
+            }
+
+            /* ── Sidebar footer ───────────────────────────────────── */
+            .sidebar-footer {
+                padding: 12px 16px;
+                border-top: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .toggle-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-size: 12px;
+                color: var(--text-2);
+            }
+
+            .toggle-label {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            /* Toggle switch */
+            .toggle {
+                position: relative;
+                width: 32px;
+                height: 18px;
+                flex-shrink: 0;
+            }
+
+            .toggle input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+
+            .toggle-slider {
+                position: absolute;
+                inset: 0;
+                background: var(--bg-4);
+                border: 1px solid var(--border-light);
+                border-radius: 18px;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+
+            .toggle-slider::before {
+                content: "";
+                position: absolute;
+                width: 12px;
+                height: 12px;
+                left: 2px;
+                top: 2px;
+                background: var(--text-3);
+                border-radius: 50%;
+                transition:
+                    transform 0.2s,
+                    background 0.2s;
+            }
+
+            .toggle input:checked + .toggle-slider {
+                background: var(--accent-dim);
+                border-color: var(--accent);
+            }
+            .toggle input:checked + .toggle-slider::before {
+                transform: translateX(14px);
+                background: var(--accent);
+            }
+
+            .btn-ghost {
+                background: none;
+                border: 1px solid var(--border-light);
+                color: var(--text-3);
+                padding: 5px 10px;
+                border-radius: var(--radius);
+                font-size: 11px;
+                cursor: pointer;
+                transition:
+                    color 0.15s,
+                    border-color 0.15s;
+                font-family: var(--font-sans);
+                width: 100%;
+                text-align: left;
+            }
+
+            .btn-ghost:hover {
+                color: var(--red);
+                border-color: var(--red);
+            }
+
+            /* ── Main area ────────────────────────────────────────── */
+            #main {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+                background: var(--bg);
+            }
+
+            /* ── Top bar ──────────────────────────────────────────── */
+            #topbar {
+                height: 48px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                padding: 0 16px;
+                gap: 12px;
+                background: var(--bg);
+                flex-shrink: 0;
+            }
+
+            #sidebar-toggle {
+                background: none;
+                border: none;
+                color: var(--text-3);
+                cursor: pointer;
+                padding: 4px;
+                display: flex;
+                align-items: center;
+                transition: color 0.15s;
+                flex-shrink: 0;
+            }
+
+            #sidebar-toggle:hover {
+                color: var(--text);
+            }
+
+            #topbar-title {
+                font-size: 13px;
+                font-weight: 600;
+                color: var(--text);
+                flex: 1;
+            }
+
+            #status-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: var(--text-3);
+                transition: background 0.3s;
+                flex-shrink: 0;
+            }
+
+            #status-dot.ok {
+                background: var(--green);
+            }
+            #status-dot.error {
+                background: var(--red);
+            }
+            #status-dot.thinking {
+                background: var(--yellow);
+                animation: pulse 1s infinite;
+            }
+
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.3;
+                }
+            }
+
+            #status-text {
+                font-size: 11px;
+                color: var(--text-3);
+            }
+
+            /* ── Messages ─────────────────────────────────────────── */
+            #messages {
+                flex: 1;
+                overflow-y: auto;
+                padding: 24px 0;
+                scroll-behavior: smooth;
+            }
+
+            #messages::-webkit-scrollbar {
+                width: 6px;
+            }
+            #messages::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            #messages::-webkit-scrollbar-thumb {
+                background: var(--border);
+                border-radius: 3px;
+            }
+
+            .msg-wrapper {
+                max-width: 780px;
+                margin: 0 auto;
+                padding: 0 24px;
+            }
+
+            .msg {
+                margin-bottom: 24px;
+                animation: fadeIn 0.2s ease;
+            }
+
+            @keyframes fadeIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(4px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            .msg-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 6px;
+                font-size: 11px;
+                color: var(--text-3);
+            }
+
+            .msg-role {
+                font-weight: 600;
+                font-size: 12px;
+            }
+
+            .msg-role.user {
+                color: var(--accent);
+            }
+            .msg-role.rain {
+                color: var(--green);
+            }
+            .msg-role.system {
+                color: var(--text-3);
+            }
+
+            .msg-agent-tag {
+                background: var(--bg-3);
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 1px 6px;
+                font-size: 10px;
+                color: var(--text-3);
+                font-family: var(--font-mono);
+            }
+
+            .msg-meta {
+                margin-left: auto;
+                font-size: 10px;
+                color: var(--text-3);
+            }
+
+            .msg-body {
+                color: var(--text);
+                line-height: 1.7;
+                word-break: break-word;
+            }
+
+            .msg-body p {
+                margin-bottom: 10px;
+            }
+            .msg-body p:last-child {
+                margin-bottom: 0;
+            }
+
+            .msg-body ul,
+            .msg-body ol {
+                margin: 8px 0 10px 20px;
+            }
+
+            .msg-body li {
+                margin-bottom: 4px;
+            }
+
+            .msg-body strong {
+                color: var(--text);
+                font-weight: 600;
+            }
+
+            .msg-body h1,
+            .msg-body h2,
+            .msg-body h3 {
+                margin: 16px 0 8px;
+                color: var(--text);
+                font-weight: 600;
+            }
+
+            .msg-body h1 {
+                font-size: 18px;
+            }
+            .msg-body h2 {
+                font-size: 16px;
+            }
+            .msg-body h3 {
+                font-size: 14px;
+            }
+
+            /* ── Code blocks ──────────────────────────────────────── */
+            .msg-body pre {
+                background: var(--bg-3);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                margin: 12px 0;
+                overflow: hidden;
+            }
+
+            .code-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 12px;
+                background: var(--bg-4);
+                border-bottom: 1px solid var(--border);
+            }
+
+            .code-lang {
+                font-size: 10px;
+                font-family: var(--font-mono);
+                color: var(--text-3);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .code-copy {
+                background: none;
+                border: none;
+                color: var(--text-3);
+                cursor: pointer;
+                font-size: 10px;
+                font-family: var(--font-sans);
+                padding: 2px 6px;
+                border-radius: 4px;
+                transition:
+                    color 0.15s,
+                    background 0.15s;
+            }
+
+            .code-copy:hover {
+                color: var(--text);
+                background: var(--border);
+            }
+            .code-copy.copied {
+                color: var(--green);
+            }
+
+            .msg-body pre code {
+                display: block;
+                padding: 14px 16px;
+                font-family: var(--font-mono);
+                font-size: 13px;
+                line-height: 1.6;
+                overflow-x: auto;
+                color: var(--text);
+                tab-size: 2;
+            }
+
+            .msg-body code:not(pre code) {
+                background: var(--bg-3);
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 1px 5px;
+                font-family: var(--font-mono);
+                font-size: 12px;
+                color: var(--purple);
+            }
+
+            /* Minimal syntax highlighting */
+            .tok-keyword {
+                color: #ff79c6;
+            }
+            .tok-string {
+                color: #f1fa8c;
+            }
+            .tok-comment {
+                color: #6272a4;
+                font-style: italic;
+            }
+            .tok-number {
+                color: #bd93f9;
+            }
+            .tok-builtin {
+                color: #8be9fd;
+            }
+            .tok-func {
+                color: #50fa7b;
+            }
+            .tok-decorator {
+                color: #ffb86c;
+            }
+
+            /* ── Progress / status messages ───────────────────────── */
+            .msg-progress {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                padding: 8px 12px;
+                background: var(--bg-2);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                margin-bottom: 16px;
+            }
+
+            .progress-line {
+                font-size: 12px;
+                color: var(--text-2);
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .progress-line.done {
+                color: var(--text-3);
+            }
+            .progress-line.active {
+                color: var(--text);
+            }
+
+            .progress-spinner {
+                width: 10px;
+                height: 10px;
+                border: 1.5px solid var(--border-light);
+                border-top-color: var(--accent);
+                border-radius: 50%;
+                animation: spin 0.7s linear infinite;
+                flex-shrink: 0;
+            }
+
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            .progress-check {
+                color: var(--green);
+                font-size: 11px;
+                flex-shrink: 0;
+            }
+            .progress-cross {
+                color: var(--red);
+                font-size: 11px;
+                flex-shrink: 0;
+            }
+
+            /* Sandbox badge */
+            .sandbox-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 11px;
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-top: 8px;
+                font-family: var(--font-mono);
+            }
+
+            .sandbox-badge.ok {
+                background: var(--green-dim);
+                color: var(--green);
+                border: 1px solid var(--green);
+            }
+            .sandbox-badge.bad {
+                background: var(--red-dim);
+                color: var(--red);
+                border: 1px solid var(--red);
+            }
+
+            /* Confidence badge */
+            .conf-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 10px;
+                color: var(--text-3);
+                font-family: var(--font-mono);
+            }
+
+            /* ── Empty state ──────────────────────────────────────── */
+            #empty-state {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                color: var(--text-3);
+                gap: 12px;
+                text-align: center;
+                padding: 24px;
+            }
+
+            .empty-icon {
+                font-size: 48px;
+                line-height: 1;
+            }
+
+            .empty-title {
+                font-size: 20px;
+                font-weight: 600;
+                color: var(--text-2);
+            }
+
+            .empty-sub {
+                font-size: 13px;
+                color: var(--text-3);
+                max-width: 360px;
+                line-height: 1.6;
+            }
+
+            .empty-pills {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                justify-content: center;
+                margin-top: 8px;
+                max-width: 500px;
+            }
+
+            .pill {
+                background: var(--bg-3);
+                border: 1px solid var(--border);
+                border-radius: 20px;
+                padding: 6px 14px;
+                font-size: 12px;
+                color: var(--text-2);
+                cursor: pointer;
+                transition:
+                    border-color 0.15s,
+                    color 0.15s;
+            }
+
+            .pill:hover {
+                border-color: var(--accent);
+                color: var(--accent);
+            }
+
+            /* ── Input area ───────────────────────────────────────── */
+            #input-area {
+                padding: 16px 24px 20px;
+                border-top: 1px solid var(--border);
+                background: var(--bg);
+                flex-shrink: 0;
+            }
+
+            .input-wrap {
+                max-width: 780px;
+                margin: 0 auto;
+                background: var(--bg-2);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                transition: border-color 0.15s;
+                overflow: hidden;
+            }
+
+            .input-wrap:focus-within {
+                border-color: var(--accent);
+            }
+
+            #chat-input {
+                width: 100%;
+                background: none;
+                border: none;
+                color: var(--text);
+                font-family: var(--font-sans);
+                font-size: 14px;
+                line-height: 1.6;
+                padding: 12px 16px 4px;
+                resize: none;
+                outline: none;
+                min-height: 44px;
+                max-height: 200px;
+                overflow-y: auto;
+            }
+
+            #chat-input::placeholder {
+                color: var(--text-3);
+            }
+
+            #chat-input::-webkit-scrollbar {
+                width: 4px;
+            }
+            #chat-input::-webkit-scrollbar-thumb {
+                background: var(--border);
+                border-radius: 2px;
+            }
+
+            .input-footer {
+                display: flex;
+                align-items: center;
+                padding: 6px 12px 10px;
+                gap: 8px;
+            }
+
+            .input-hint {
+                font-size: 11px;
+                color: var(--text-3);
+                flex: 1;
+            }
+
+            #send-btn {
+                background: var(--accent);
+                border: none;
+                color: #fff;
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition:
+                    background 0.15s,
+                    opacity 0.15s;
+                flex-shrink: 0;
+            }
+
+            #send-btn:hover {
+                background: #3a8ee6;
+            }
+            #send-btn:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+
+            #send-btn svg {
+                width: 14px;
+                height: 14px;
+            }
+
+            /* ── Drag and drop zone ───────────────────────────────── */
+            #input-area.drag-over .input-wrap {
+                border-color: var(--accent);
+                background: var(--accent-dim);
+            }
+
+            /* File badge shown in input after file loaded */
+            .file-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                background: var(--accent-dim);
+                border: 1px solid var(--accent);
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 11px;
+                color: var(--accent);
+                font-family: var(--font-mono);
+                margin: 0 12px 8px;
+            }
+
+            .file-badge-remove {
+                background: none;
+                border: none;
+                color: var(--accent);
+                cursor: pointer;
+                padding: 0;
+                font-size: 13px;
+                line-height: 1;
+                opacity: 0.7;
+            }
+
+            .file-badge-remove:hover {
+                opacity: 1;
+            }
+
+            /* File attach button */
+            #attach-btn {
+                background: none;
+                border: none;
+                color: var(--text-3);
+                cursor: pointer;
+                padding: 4px;
+                display: flex;
+                align-items: center;
+                transition: color 0.15s;
+                flex-shrink: 0;
+            }
+
+            #attach-btn:hover {
+                color: var(--accent);
+            }
+            #attach-btn.has-file {
+                color: var(--accent);
+            }
+
+            /* Full-window drag overlay */
+            #window-drop-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(13, 13, 13, 0.85);
+                border: 3px dashed var(--accent);
+                z-index: 1000;
+                align-items: center;
+                justify-content: center;
+                flex-direction: column;
+                gap: 12px;
+                color: var(--accent);
+                font-size: 18px;
+                font-weight: 600;
+                pointer-events: none;
+            }
+
+            #window-drop-overlay.visible {
+                display: flex;
+            }
+
+            #window-drop-overlay .drop-icon {
+                font-size: 56px;
+            }
+
+            /* ── Scrollbar global ─────────────────────────────────── */
+            * {
+                scrollbar-width: thin;
+                scrollbar-color: var(--border) transparent;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="app">
+            <!-- ── Sidebar ─────────────────────────────────────────── -->
+            <aside id="sidebar">
+                <div class="sidebar-header">
+                    <div class="logo">⛈️</div>
+                    <div>
+                        <div class="logo-text">Rain</div>
+                        <div class="logo-sub">Sovereign AI</div>
+                    </div>
+                </div>
+
+                <div class="sidebar-scroll">
+                    <div class="sidebar-section">Agents</div>
+                    <div id="agent-list">
+                        <div
+                            class="agent-item"
+                            style="
+                                color: var(--text-3);
+                                font-size: 11px;
+                                padding: 8px 16px;
+                            "
+                        >
+                            Loading...
+                        </div>
+                    </div>
+
+                    <div class="sidebar-section" style="margin-top: 12px">
+                        Sessions
+                    </div>
+                    <div id="session-list">
+                        <div
+                            class="agent-item"
+                            style="
+                                color: var(--text-3);
+                                font-size: 11px;
+                                padding: 8px 16px;
+                            "
+                        >
+                            Loading...
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-footer">
+                    <div class="toggle-row">
+                        <span class="toggle-label">
+                            🔬 <span>Sandbox</span>
+                        </span>
+                        <label class="toggle">
+                            <input type="checkbox" id="sandbox-toggle" />
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <button class="btn-ghost" id="forget-btn">
+                        🗑️ Forget all memory
+                    </button>
+                </div>
+            </aside>
+
+            <!-- ── Main ────────────────────────────────────────────── -->
+            <div id="main">
+                <!-- Top bar -->
+                <div id="topbar">
+                    <button id="sidebar-toggle" title="Toggle sidebar">
+                        <svg
+                            viewBox="0 0 16 16"
+                            width="16"
+                            height="16"
+                            fill="currentColor"
+                        >
+                            <rect
+                                x="1"
+                                y="3"
+                                width="14"
+                                height="1.5"
+                                rx="0.75"
+                            />
+                            <rect
+                                x="1"
+                                y="7.25"
+                                width="14"
+                                height="1.5"
+                                rx="0.75"
+                            />
+                            <rect
+                                x="1"
+                                y="11.5"
+                                width="14"
+                                height="1.5"
+                                rx="0.75"
+                            />
+                        </svg>
+                    </button>
+                    <div id="topbar-title">Rain ⛈️</div>
+                    <div id="status-dot"></div>
+                    <div id="status-text">connecting...</div>
+                </div>
+
+                <!-- Messages -->
+                <div id="messages">
+                    <div id="empty-state">
+                        <div class="empty-icon">⛈️</div>
+                        <div class="empty-title">Let it Rain</div>
+                        <div class="empty-sub">
+                            Sovereign AI running locally on your hardware. Your
+                            data never leaves this machine.
+                        </div>
+                        <div class="empty-pills">
+                            <div
+                                class="pill"
+                                onclick="fillInput('explain how lightning payment channels work')"
+                            >
+                                ⚡ How do lightning channels work?
+                            </div>
+                            <div
+                                class="pill"
+                                onclick="fillInput('write a python function to generate a bitcoin keypair')"
+                            >
+                                ₿ Generate a Bitcoin keypair
+                            </div>
+                            <div
+                                class="pill"
+                                onclick="fillInput('what are the tradeoffs between custodial and non-custodial lightning wallets')"
+                            >
+                                🤔 Custodial vs non-custodial wallets
+                            </div>
+                            <div
+                                class="pill"
+                                onclick="fillInput('write a python script that monitors a bitcoin address for incoming transactions using only stdlib')"
+                            >
+                                🔍 Monitor a Bitcoin address
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input -->
+                <div id="input-area">
+                    <div class="input-wrap">
+                        <textarea
+                            id="chat-input"
+                            placeholder="Ask Rain anything..."
+                            rows="1"
+                            autocomplete="off"
+                            spellcheck="false"
+                        ></textarea>
+                        <div id="file-badge-slot"></div>
+                        <div class="input-footer">
+                            <input
+                                type="file"
+                                id="file-input"
+                                accept=".py,.js,.ts,.html,.css,.json,.md,.txt,.sh,.rs,.go,.cpp,.c,.java,.sql,.yaml,.yml,.toml,.env"
+                                style="display: none"
+                            />
+                            <button id="attach-btn" title="Attach file">
+                                <svg
+                                    viewBox="0 0 16 16"
+                                    width="16"
+                                    height="16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.5"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                >
+                                    <path
+                                        d="M13.5 8.5l-5.5 5.5a4 4 0 01-5.657-5.657l6.364-6.364a2.5 2.5 0 013.535 3.535l-6.364 6.364a1 1 0 01-1.414-1.414l5.657-5.657"
+                                    />
+                                </svg>
+                            </button>
+                            <span class="input-hint"
+                                >Enter to send · Shift+Enter for newline · or
+                                drag a file</span
+                            >
+                            <button id="send-btn" title="Send">
+                                <svg
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                >
+                                    <line x1="8" y1="13" x2="8" y2="3" />
+                                    <polyline points="4,7 8,3 12,7" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- /main -->
+        </div>
+        <!-- /app -->
+
+        <!-- Full-window drag overlay -->
+        <div id="window-drop-overlay">
+            <div class="drop-icon">⛈️</div>
+            <div>Drop file to analyze</div>
+        </div>
+
+        <script>
+            // ── State ──────────────────────────────────────────────────────────────
+            const state = {
+                thinking: false,
+                currentProgress: null,
+            };
+
+            // ── DOM refs ───────────────────────────────────────────────────────────
+            const messagesEl = document.getElementById("messages");
+            const emptyState = document.getElementById("empty-state");
+            const chatInput = document.getElementById("chat-input");
+            const sendBtn = document.getElementById("send-btn");
+            const statusDot = document.getElementById("status-dot");
+            const statusText = document.getElementById("status-text");
+            const sandboxToggle = document.getElementById("sandbox-toggle");
+            const forgetBtn = document.getElementById("forget-btn");
+            const sidebar = document.getElementById("sidebar");
+            const sidebarToggle = document.getElementById("sidebar-toggle");
+            const agentList = document.getElementById("agent-list");
+            const sessionList = document.getElementById("session-list");
+
+            // ── Init ───────────────────────────────────────────────────────────────
+            async function init() {
+                await checkHealth();
+                await loadAgents();
+                await loadSessions();
+            }
+
+            async function checkHealth() {
+                try {
+                    const res = await fetch("/api/health");
+                    const data = await res.json();
+                    if (data.ollama) {
+                        setStatus("ok", `${data.model || "ready"}`);
+                    } else {
+                        setStatus("error", "Ollama not running");
+                    }
+                } catch {
+                    setStatus("error", "Server unreachable");
+                }
+            }
+
+            function setStatus(state, text) {
+                statusDot.className = `${state}`;
+                statusText.textContent = text;
+            }
+
+            // ── Agents ─────────────────────────────────────────────────────────────
+            async function loadAgents() {
+                try {
+                    const res = await fetch("/api/agents");
+                    const data = await res.json();
+                    agentList.innerHTML = "";
+
+                    for (const agent of data.roster) {
+                        if (["reflection", "synthesizer"].includes(agent.type))
+                            continue;
+                        const div = document.createElement("div");
+                        div.className = "agent-item";
+                        div.innerHTML = `
+        <div class="agent-dot ${agent.specialized ? "specialized" : "prompt"}"></div>
+        <div class="agent-name">${agentLabel(agent.type)}</div>
+        <div class="agent-model">${shortModel(agent.model)}</div>
+      `;
+                        agentList.appendChild(div);
+                    }
+
+                    if (data.suggestions && data.suggestions.length > 0) {
+                        const tip = document.createElement("div");
+                        tip.style.cssText =
+                            "padding:8px 16px;font-size:10px;color:var(--text-3);line-height:1.5;";
+                        tip.textContent = `💡 ${data.suggestions[0]} available for stronger Dev Agent`;
+                        agentList.appendChild(tip);
+                    }
+                } catch {
+                    agentList.innerHTML =
+                        '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Unavailable</div>';
+                }
+            }
+
+            function agentLabel(type) {
+                return (
+                    {
+                        dev: "Dev Agent",
+                        logic: "Logic Agent",
+                        domain: "Domain Expert",
+                        reflection: "Reflection",
+                        synthesizer: "Synthesizer",
+                        general: "General",
+                    }[type] || type
+                );
+            }
+
+            function shortModel(name) {
+                return name.replace(":latest", "").split("/").pop();
+            }
+
+            // ── Sessions ───────────────────────────────────────────────────────────
+            async function loadSessions() {
+                try {
+                    const res = await fetch("/api/sessions");
+                    const data = await res.json();
+                    sessionList.innerHTML = "";
+
+                    if (!data.sessions || data.sessions.length === 0) {
+                        sessionList.innerHTML =
+                            '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">No sessions yet</div>';
+                        return;
+                    }
+
+                    for (const s of data.sessions) {
+                        const div = document.createElement("div");
+                        div.className = "session-item";
+                        const d = new Date(s.started_at);
+                        const dateStr = d.toLocaleDateString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                        });
+                        div.innerHTML = `
+        <div class="session-date">${dateStr}</div>
+        <div class="session-summary">${s.summary || "No summary"}</div>
+        <div class="session-count">${s.message_count} messages</div>
+      `;
+                        div.onclick = () => loadSessionMessages(s.id, div);
+                        sessionList.appendChild(div);
+                    }
+                } catch {
+                    sessionList.innerHTML =
+                        '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Unavailable</div>';
+                }
+            }
+
+            async function loadSessionMessages(sessionId, itemEl) {
+                document
+                    .querySelectorAll(".session-item")
+                    .forEach((el) => el.classList.remove("active"));
+                itemEl.classList.add("active");
+                try {
+                    const res = await fetch(
+                        `/api/sessions/${sessionId}/messages`,
+                    );
+                    const data = await res.json();
+                    clearMessages();
+                    for (const msg of data.messages) {
+                        if (msg.role === "user") {
+                            appendUserMessage(msg.content);
+                        } else {
+                            appendRainMessage(msg.content, {
+                                confidence: msg.confidence,
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to load session", e);
+                }
+            }
+
+            // ── Chat ───────────────────────────────────────────────────────────────
+            async function sendMessage() {
+                const text = chatInput.value.trim();
+                if (!text || state.thinking) return;
+
+                clearMessages();
+                appendUserMessage(text);
+                chatInput.value = "";
+                autoResize();
+
+                state.thinking = true;
+                sendBtn.disabled = true;
+                setStatus("thinking", "thinking...");
+
+                // Create progress block
+                const progressEl = appendProgress();
+                state.currentProgress = progressEl;
+
+                try {
+                    const res = await fetch("/api/chat", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            message: text,
+                            sandbox: sandboxToggle.checked,
+                        }),
+                    });
+
+                    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buf = "";
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        const lines = buf.split("\n");
+                        buf = lines.pop();
+                        for (const line of lines) {
+                            if (line.startsWith("data: ")) {
+                                try {
+                                    const event = JSON.parse(line.slice(6));
+                                    handleEvent(event, progressEl);
+                                } catch {}
+                            }
+                        }
+                    }
+                } catch (e) {
+                    removeProgress(progressEl);
+                    appendSystemMessage(`❌ ${e.message}`);
+                    setStatus("error", "error");
+                } finally {
+                    state.thinking = false;
+                    sendBtn.disabled = false;
+                }
+            }
+
+            function handleEvent(event, progressEl) {
+                switch (event.type) {
+                    case "routing":
+                        addProgressLine(
+                            progressEl,
+                            `🔀 ${event.agent}`,
+                            "active",
+                        );
+                        break;
+                    case "progress":
+                        addProgressLine(progressEl, event.message, "active");
+                        break;
+                    case "sandbox":
+                        addProgressLine(
+                            progressEl,
+                            event.message,
+                            event.status === "ok" ? "done" : "active",
+                        );
+                        break;
+                    case "done":
+                        removeProgress(progressEl);
+                        appendRainMessage(event.content, event);
+                        loadSessions(); // refresh sidebar
+                        setStatus("ok", _lastModel || "ready");
+                        break;
+                    case "error":
+                        removeProgress(progressEl);
+                        appendSystemMessage(`❌ ${event.message}`);
+                        setStatus("error", "error");
+                        break;
+                }
+            }
+
+            // ── Message rendering ──────────────────────────────────────────────────
+            function clearMessages() {
+                // Remove all .msg elements but keep empty-state (hidden)
+                document
+                    .querySelectorAll(".msg, .msg-progress")
+                    .forEach((el) => el.remove());
+                emptyState.style.display = "none";
+            }
+
+            function appendUserMessage(text) {
+                emptyState.style.display = "none";
+                const wrapper = document.createElement("div");
+                wrapper.className = "msg-wrapper";
+                wrapper.innerHTML = `
+    <div class="msg">
+      <div class="msg-header">
+        <span class="msg-role user">You</span>
+      </div>
+      <div class="msg-body">${escHtml(text)}</div>
+    </div>
+  `;
+                messagesEl.appendChild(wrapper);
+                scrollToBottom();
+            }
+
+            let _lastModel = "";
+
+            function appendRainMessage(content, meta = {}) {
+                emptyState.style.display = "none";
+                const wrapper = document.createElement("div");
+                wrapper.className = "msg-wrapper";
+
+                const agentTag = meta.agent_type
+                    ? `<span class="msg-agent-tag">${agentLabel(meta.agent_type)}</span>`
+                    : "";
+
+                const metaStr = meta.confidence
+                    ? `<span class="conf-badge">conf ${(meta.confidence * 100).toFixed(0)}%</span>
+       <span class="msg-meta">${meta.duration ? meta.duration + "s" : ""}</span>`
+                    : "";
+
+                let sandboxBadge = "";
+                if (meta.sandbox) {
+                    const ok = meta.sandbox.all_ok;
+                    sandboxBadge = `<div class="sandbox-badge ${ok ? "ok" : "bad"}">
+      ${ok ? "✅" : "⚠️"} sandbox: ${meta.sandbox.verified}/${meta.sandbox.total} verified
+    </div>`;
+                }
+
+                wrapper.innerHTML = `
+    <div class="msg">
+      <div class="msg-header">
+        <span class="msg-role rain">Rain</span>
+        ${agentTag}
+        ${metaStr}
+      </div>
+      <div class="msg-body">${renderMarkdown(content)}</div>
+      ${sandboxBadge}
+    </div>
+  `;
+                messagesEl.appendChild(wrapper);
+                scrollToBottom();
+            }
+
+            function appendSystemMessage(text) {
+                const wrapper = document.createElement("div");
+                wrapper.className = "msg-wrapper";
+                wrapper.innerHTML = `
+    <div class="msg">
+      <div class="msg-header"><span class="msg-role system">system</span></div>
+      <div class="msg-body" style="color:var(--text-3);font-size:12px;">${escHtml(text)}</div>
+    </div>
+  `;
+                messagesEl.appendChild(wrapper);
+                scrollToBottom();
+            }
+
+            // ── Progress block ─────────────────────────────────────────────────────
+            function appendProgress() {
+                const wrapper = document.createElement("div");
+                wrapper.className = "msg-wrapper";
+                const el = document.createElement("div");
+                el.className = "msg-progress";
+                wrapper.appendChild(el);
+                messagesEl.appendChild(wrapper);
+                scrollToBottom();
+                return wrapper;
+            }
+
+            function addProgressLine(wrapperEl, text, state = "active") {
+                const el = wrapperEl.querySelector(".msg-progress");
+                if (!el) return;
+                // Mark previous active lines as done
+                el.querySelectorAll(".progress-line.active").forEach((l) => {
+                    l.classList.replace("active", "done");
+                    const spinner = l.querySelector(".progress-spinner");
+                    if (spinner)
+                        spinner.outerHTML =
+                            '<span class="progress-check">✓</span>';
+                });
+                const line = document.createElement("div");
+                line.className = `progress-line ${state}`;
+                if (state === "active") {
+                    line.innerHTML = `<div class="progress-spinner"></div><span>${escHtml(text)}</span>`;
+                } else {
+                    line.innerHTML = `<span class="progress-check">✓</span><span>${escHtml(text)}</span>`;
+                }
+                el.appendChild(line);
+                scrollToBottom();
+            }
+
+            function removeProgress(wrapperEl) {
+                if (wrapperEl && wrapperEl.parentNode) {
+                    wrapperEl.remove();
+                }
+            }
+
+            // ── Markdown renderer ──────────────────────────────────────────────────
+            function renderMarkdown(text) {
+                // Escape HTML first (we'll unescape intentional HTML from our renderer)
+                let html = text;
+
+                // Fenced code blocks
+                html = html.replace(
+                    /```(\w+)?\n([\s\S]*?)```/g,
+                    (_, lang, code) => {
+                        const l = lang || "text";
+                        const highlighted = highlightCode(code.trimEnd(), l);
+                        return `<pre><div class="code-header">
+      <span class="code-lang">${escHtml(l)}</span>
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+    </div><code class="lang-${escHtml(l)}">${highlighted}</code></pre>`;
+                    },
+                );
+
+                // Inline code
+                html = html.replace(
+                    /`([^`\n]+)`/g,
+                    (_, c) => `<code>${escHtml(c)}</code>`,
+                );
+
+                // Bold
+                html = html.replace(
+                    /\*\*([^*\n]+)\*\*/g,
+                    "<strong>$1</strong>",
+                );
+
+                // Italic
+                html = html.replace(
+                    /(?<!\*)\*([^*\n]+)\*(?!\*)/g,
+                    "<em>$1</em>",
+                );
+
+                // Headers
+                html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+                html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+                html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+
+                // Unordered lists
+                html = html.replace(/^[\*\-] (.+)$/gm, "<li>$1</li>");
+                html = html.replace(
+                    /(<li>[\s\S]*?<\/li>)(\s*(?!<li>))/g,
+                    "<ul>$1</ul>$2",
+                );
+
+                // Numbered lists
+                html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+
+                // Paragraphs — double newlines
+                html = html
+                    .split(/\n\n+/)
+                    .map((block) => {
+                        block = block.trim();
+                        if (!block) return "";
+                        if (/^<(h[123]|ul|ol|pre|li)/.test(block)) return block;
+                        return `<p>${block.replace(/\n/g, "<br>")}</p>`;
+                    })
+                    .join("\n");
+
+                return html;
+            }
+
+            // ── Minimal syntax highlighter ─────────────────────────────────────────
+            function highlightCode(code, lang) {
+                const esc = escHtml(code);
+                if (
+                    ![
+                        "python",
+                        "py",
+                        "javascript",
+                        "js",
+                        "bash",
+                        "sh",
+                    ].includes(lang)
+                )
+                    return esc;
+
+                let h = esc;
+
+                if (lang === "python" || lang === "py") {
+                    // Strings
+                    h = h.replace(
+                        /(&#39;&#39;&#39;[\s\S]*?&#39;&#39;&#39;|&quot;&quot;&quot;[\s\S]*?&quot;&quot;&quot;)/g,
+                        (m) => `<span class="tok-string">${m}</span>`,
+                    );
+                    h = h.replace(
+                        /(&#39;[^&#39;\n]*&#39;|&quot;[^&quot;\n]*&quot;)/g,
+                        (m) => `<span class="tok-string">${m}</span>`,
+                    );
+                    // Comments
+                    h = h.replace(
+                        /(#[^\n]*)/g,
+                        (m) => `<span class="tok-comment">${m}</span>`,
+                    );
+                    // Decorators
+                    h = h.replace(
+                        /(@\w+)/g,
+                        (m) => `<span class="tok-decorator">${m}</span>`,
+                    );
+                    // Keywords
+                    const pyKws = [
+                        "def",
+                        "class",
+                        "import",
+                        "from",
+                        "return",
+                        "if",
+                        "elif",
+                        "else",
+                        "for",
+                        "while",
+                        "try",
+                        "except",
+                        "finally",
+                        "with",
+                        "as",
+                        "in",
+                        "not",
+                        "and",
+                        "or",
+                        "is",
+                        "None",
+                        "True",
+                        "False",
+                        "lambda",
+                        "pass",
+                        "break",
+                        "continue",
+                        "raise",
+                        "yield",
+                        "async",
+                        "await",
+                    ];
+                    pyKws.forEach((kw) => {
+                        h = h.replace(
+                            new RegExp(`\\b(${kw})\\b`, "g"),
+                            `<span class="tok-keyword">$1</span>`,
+                        );
+                    });
+                    // Builtins
+                    [
+                        "print",
+                        "len",
+                        "range",
+                        "str",
+                        "int",
+                        "float",
+                        "list",
+                        "dict",
+                        "set",
+                        "tuple",
+                        "bool",
+                        "type",
+                        "isinstance",
+                        "open",
+                        "super",
+                        "self",
+                    ].forEach((b) => {
+                        h = h.replace(
+                            new RegExp(`\\b(${b})\\b`, "g"),
+                            `<span class="tok-builtin">$1</span>`,
+                        );
+                    });
+                    // Numbers
+                    h = h.replace(
+                        /\b(\d+\.?\d*)\b/g,
+                        '<span class="tok-number">$1</span>',
+                    );
+                    // Function defs
+                    h = h.replace(
+                        /\bdef\s+(<span[^>]*>def<\/span>\s+)?(\w+)/g,
+                        (m, sp, name) =>
+                            m.replace(
+                                name,
+                                `<span class="tok-func">${name}</span>`,
+                            ),
+                    );
+                }
+
+                if (lang === "javascript" || lang === "js") {
+                    h = h.replace(
+                        /(`[^`]*`|&#39;[^&#39;\n]*&#39;|&quot;[^&quot;\n]*&quot;)/g,
+                        (m) => `<span class="tok-string">${m}</span>`,
+                    );
+                    h = h.replace(
+                        /(\/\/[^\n]*)/g,
+                        (m) => `<span class="tok-comment">${m}</span>`,
+                    );
+                    [
+                        "const",
+                        "let",
+                        "var",
+                        "function",
+                        "return",
+                        "if",
+                        "else",
+                        "for",
+                        "while",
+                        "class",
+                        "import",
+                        "export",
+                        "from",
+                        "new",
+                        "this",
+                        "async",
+                        "await",
+                        "try",
+                        "catch",
+                        "throw",
+                        "typeof",
+                        "instanceof",
+                        "true",
+                        "false",
+                        "null",
+                        "undefined",
+                    ].forEach((kw) => {
+                        h = h.replace(
+                            new RegExp(`\\b(${kw})\\b`, "g"),
+                            `<span class="tok-keyword">$1</span>`,
+                        );
+                    });
+                    h = h.replace(
+                        /\b(\d+\.?\d*)\b/g,
+                        '<span class="tok-number">$1</span>',
+                    );
+                }
+
+                if (lang === "bash" || lang === "sh") {
+                    h = h.replace(
+                        /(#[^\n]*)/g,
+                        (m) => `<span class="tok-comment">${m}</span>`,
+                    );
+                    [
+                        "if",
+                        "then",
+                        "else",
+                        "fi",
+                        "for",
+                        "do",
+                        "done",
+                        "while",
+                        "echo",
+                        "export",
+                        "source",
+                        "cd",
+                        "ls",
+                        "mkdir",
+                        "rm",
+                        "cp",
+                        "mv",
+                    ].forEach((kw) => {
+                        h = h.replace(
+                            new RegExp(`\\b(${kw})\\b`, "g"),
+                            `<span class="tok-keyword">$1</span>`,
+                        );
+                    });
+                }
+
+                return h;
+            }
+
+            // ── Utilities ──────────────────────────────────────────────────────────
+            function escHtml(str) {
+                return String(str)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#39;");
+            }
+
+            function scrollToBottom() {
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            function fillInput(text) {
+                chatInput.value = text;
+                chatInput.focus();
+                autoResize();
+            }
+
+            async function copyCode(btn) {
+                const code = btn
+                    .closest("pre")
+                    .querySelector("code").textContent;
+                try {
+                    await navigator.clipboard.writeText(code);
+                    btn.textContent = "copied!";
+                    btn.classList.add("copied");
+                    setTimeout(() => {
+                        btn.textContent = "copy";
+                        btn.classList.remove("copied");
+                    }, 1500);
+                } catch {}
+            }
+
+            // ── Input auto-resize ──────────────────────────────────────────────────
+            function autoResize() {
+                chatInput.style.height = "auto";
+                chatInput.style.height =
+                    Math.min(chatInput.scrollHeight, 200) + "px";
+            }
+
+            // ── File attachment state ──────────────────────────────────────────────
+            const fileState = {
+                name: null,
+                content: null,
+            };
+
+            const attachBtn = document.getElementById("attach-btn");
+            const fileInput = document.getElementById("file-input");
+            const fileBadgeSlot = document.getElementById("file-badge-slot");
+            const windowDropOverlay = document.getElementById(
+                "window-drop-overlay",
+            );
+            const inputArea = document.getElementById("input-area");
+
+            function setFile(name, content) {
+                fileState.name = name;
+                fileState.content = content;
+                attachBtn.classList.add("has-file");
+                fileBadgeSlot.innerHTML = `
+                    <div class="file-badge">
+                        📎 ${escHtml(name)}
+                        <button class="file-badge-remove" onclick="clearFile()" title="Remove file">✕</button>
+                    </div>`;
+                chatInput.placeholder = `Ask about ${name}...`;
+                chatInput.focus();
+                autoResize();
+            }
+
+            function clearFile() {
+                fileState.name = null;
+                fileState.content = null;
+                attachBtn.classList.remove("has-file");
+                fileBadgeSlot.innerHTML = "";
+                chatInput.placeholder = "Ask Rain anything...";
+                fileInput.value = "";
+                autoResize();
+            }
+
+            function readFile(file) {
+                // Guard: text files only, max 500KB
+                if (file.size > 500 * 1024) {
+                    appendSystemMessage(
+                        `❌ File too large (max 500KB): ${file.name}`,
+                    );
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = (e) => setFile(file.name, e.target.result);
+                reader.onerror = () =>
+                    appendSystemMessage(`❌ Could not read file: ${file.name}`);
+                reader.readAsText(file);
+            }
+
+            // Override sendMessage to prepend file content when present
+            const _originalSendMessage = sendMessage;
+            sendMessage = async function () {
+                if (fileState.content) {
+                    const query =
+                        chatInput.value.trim() ||
+                        "Analyze this file and explain what it does, identify any bugs or issues, and suggest improvements.";
+                    const payload = `${query}\n\nFile: ${fileState.name}\n\`\`\`\n${fileState.content}\n\`\`\``;
+                    chatInput.value = payload;
+                    clearFile();
+                }
+                await _originalSendMessage();
+            };
+
+            // ── Attach button ──────────────────────────────────────────────────────
+            attachBtn.addEventListener("click", () => fileInput.click());
+
+            fileInput.addEventListener("change", (e) => {
+                const file = e.target.files[0];
+                if (file) readFile(file);
+            });
+
+            // ── Drag and drop — full window ────────────────────────────────────────
+            let dragCounter = 0;
+
+            document.addEventListener("dragenter", (e) => {
+                e.preventDefault();
+                dragCounter++;
+                if (dragCounter === 1)
+                    windowDropOverlay.classList.add("visible");
+            });
+
+            document.addEventListener("dragleave", (e) => {
+                dragCounter--;
+                if (dragCounter === 0)
+                    windowDropOverlay.classList.remove("visible");
+            });
+
+            document.addEventListener("dragover", (e) => {
+                e.preventDefault(); // required to allow drop
+            });
+
+            document.addEventListener("drop", (e) => {
+                e.preventDefault();
+                dragCounter = 0;
+                windowDropOverlay.classList.remove("visible");
+                const file = e.dataTransfer.files[0];
+                if (file) readFile(file);
+            });
+
+            // ── Event listeners ────────────────────────────────────────────────────
+            chatInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            chatInput.addEventListener("input", autoResize);
+
+            sendBtn.addEventListener("click", sendMessage);
+
+            sidebarToggle.addEventListener("click", () => {
+                sidebar.classList.toggle("collapsed");
+            });
+
+            forgetBtn.addEventListener("click", async () => {
+                if (!confirm("Wipe all Rain memory? This cannot be undone."))
+                    return;
+                try {
+                    await fetch("/api/forget", { method: "POST" });
+                    sessionList.innerHTML =
+                        '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Memory cleared.</div>';
+                } catch {}
+            });
+
+            // ── Boot ───────────────────────────────────────────────────────────────
+            init();
+        </script>
+    </body>
+</html>
