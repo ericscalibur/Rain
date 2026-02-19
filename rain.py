@@ -64,6 +64,16 @@ class RainMemory:
                     confidence REAL,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS vectors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id INTEGER NOT NULL,
+                    session_id TEXT NOT NULL,
+                    content_snippet TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    FOREIGN KEY (message_id) REFERENCES messages(id)
+                );
             """)
 
     def start_session(self, model: str):
@@ -83,13 +93,122 @@ class RainMemory:
             )
 
     def save_message(self, role: str, content: str, is_code: bool = False, confidence: float = None):
-        """Save a single message to the current session"""
+        """Save a single message and asynchronously embed it for semantic search."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO messages (session_id, timestamp, role, content, is_code, confidence)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (self.session_id, datetime.now().isoformat(), role, content, int(is_code), confidence)
             )
+            message_id = cursor.lastrowid
+
+        # Embed in background — never block the main pipeline
+        t = threading.Thread(
+            target=self._store_embedding,
+            args=(message_id, content),
+            daemon=True,
+        )
+        t.start()
+
+    # ── Semantic Memory (Phase 5A) ─────────────────────────────────────────
+
+    def _embed(self, text: str) -> Optional[List[float]]:
+        """
+        Get an embedding vector for text using nomic-embed-text via Ollama HTTP API.
+        Returns None if the model isn't available or the call fails.
+        """
+        import urllib.request
+        try:
+            payload = json.dumps({
+                "model": "nomic-embed-text",
+                "prompt": text[:2000],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:11434/api/embeddings",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            vec = data.get("embedding")
+            if isinstance(vec, list) and vec:
+                return vec
+            return None
+        except Exception:
+            return None
+
+    def _store_embedding(self, message_id: int, content: str):
+        """Embed a message and persist the vector to the vectors table."""
+        vec = self._embed(content)
+        if vec is None:
+            return
+        blob = json.dumps(vec).encode("utf-8")
+        snippet = content[:200].replace("\n", " ")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT INTO vectors (message_id, session_id, content_snippet, embedding, timestamp)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (message_id, self.session_id, snippet, blob, datetime.now().isoformat()),
+                )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _cosine_similarity(a: List[float], b: List[float]) -> float:
+        """Pure-stdlib cosine similarity — no numpy required."""
+        dot = sum(x * y for x, y in zip(a, b))
+        mag_a = sum(x * x for x in a) ** 0.5
+        mag_b = sum(x * x for x in b) ** 0.5
+        if mag_a == 0 or mag_b == 0:
+            return 0.0
+        return dot / (mag_a * mag_b)
+
+    def semantic_search(self, query: str, top_k: int = 3, min_similarity: float = 0.4) -> List[Dict]:
+        """
+        Find the most semantically similar past messages to the query.
+        Returns up to top_k results from *other* sessions (not the current one).
+        """
+        query_vec = self._embed(query)
+        if query_vec is None:
+            return []
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT v.content_snippet, v.embedding, v.timestamp, v.session_id,
+                              m.role, m.content
+                       FROM vectors v
+                       JOIN messages m ON v.message_id = m.id
+                       WHERE v.session_id != ?
+                       ORDER BY v.timestamp DESC
+                       LIMIT 500""",
+                    (self.session_id,),
+                ).fetchall()
+        except Exception:
+            return []
+
+        scored = []
+        for row in rows:
+            try:
+                vec = json.loads(row["embedding"].decode("utf-8"))
+                sim = self._cosine_similarity(query_vec, vec)
+                if sim >= min_similarity:
+                    scored.append({
+                        "similarity": sim,
+                        "role": row["role"],
+                        "content": row["content"],
+                        "snippet": row["content_snippet"],
+                        "timestamp": row["timestamp"],
+                        "session_id": row["session_id"],
+                    })
+            except Exception:
+                continue
+
+        scored.sort(key=lambda x: x["similarity"], reverse=True)
+        return scored[:top_k]
 
     def get_recent_sessions(self, limit: int = 5) -> List[Dict]:
         """Get the most recent completed sessions with their summaries"""
@@ -1444,10 +1563,12 @@ class MultiAgentOrchestrator:
     # Core query method
     # ------------------------------------------------------------------
 
-    def _build_memory_context(self) -> str:
+    def _build_memory_context(self, query: str = None) -> str:
         """
-        Two-tier memory context — same as RainOrchestrator.
-        Tier 1: session summaries (long-term). Tier 2: last 20 messages (working).
+        Three-tier memory context.
+        Tier 1: session summaries (long-term episodic).
+        Tier 2: last 20 messages (working memory).
+        Tier 3: semantic search — relevant past exchanges retrieved by meaning.
         """
         if not self.memory:
             return ""
@@ -1465,14 +1586,23 @@ class MultiAgentOrchestrator:
 
         # ── Tier 2: Working memory (recent messages) ───────────────────
         recent = self.memory.get_recent_messages(limit=20)
-        if not recent:
-            return context
+        if recent:
+            context += "\n\nRecent conversation context (for continuity):\n"
+            for msg in recent:
+                role = "You" if msg["role"] == "user" else "Rain"
+                content = msg["content"][:600] + "..." if len(msg["content"]) > 600 else msg["content"]
+                context += f"{role}: {content}\n"
 
-        context += "\n\nRecent conversation context (for continuity):\n"
-        for msg in recent:
-            role = "You" if msg["role"] == "user" else "Rain"
-            content = msg["content"][:600] + "..." if len(msg["content"]) > 600 else msg["content"]
-            context += f"{role}: {content}\n"
+        # ── Tier 3: Semantic memory (relevant past exchanges) ──────────
+        if query:
+            hits = self.memory.semantic_search(query, top_k=3)
+            if hits:
+                context += "\n\nSemantically relevant past exchanges:\n"
+                for hit in hits:
+                    role = "You" if hit["role"] == "user" else "Rain"
+                    date = datetime.fromisoformat(hit["timestamp"]).strftime("%b %d")
+                    snippet = hit["content"][:400] + "..." if len(hit["content"]) > 400 else hit["content"]
+                    context += f"  [{date} · {round(hit['similarity'] * 100)}% match] {role}: {snippet}\n"
 
         return context
 
@@ -1480,7 +1610,7 @@ class MultiAgentOrchestrator:
         """Send a prompt to a specific agent's model and return the response."""
         self._current_process = None
         try:
-            memory_context = self._build_memory_context()
+            memory_context = self._build_memory_context(query=prompt)
             full_prompt = (
                 f"{agent.system_prompt}{memory_context}\n\n"
                 f"User: {prompt}\n\nAssistant:"
