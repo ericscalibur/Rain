@@ -1291,7 +1291,6 @@
                 const text = chatInput.value.trim();
                 if (!text || state.thinking) return;
 
-                clearMessages();
                 appendUserMessage(text);
                 chatInput.value = "";
                 autoResize();
