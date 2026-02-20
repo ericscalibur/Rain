@@ -343,12 +343,21 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             if result:
                 sandbox_summary = None
                 if result.sandbox_results:
-                    verified = sum(1 for r in result.sandbox_results if r.success)
-                    total = len(result.sandbox_results)
+                    network_errors = [
+                        r for r in result.sandbox_results
+                        if not r.success and any(x in (r.stderr + (r.error_message or "")).lower()
+                            for x in ["urlerror", "connectionrefused", "nodename nor servname",
+                                       "name or service not known", "network is unreachable",
+                                       "connection timed out", "urlopen error", "ssl"])
+                    ]
+                    testable = [r for r in result.sandbox_results if r not in network_errors]
+                    verified = sum(1 for r in testable if r.success)
+                    total = len(testable)
                     sandbox_summary = {
                         "verified": verified,
                         "total": total,
-                        "all_ok": verified == total,
+                        "all_ok": verified == total if total > 0 else True,
+                        "network": len(network_errors) > 0,
                     }
 
                 emit({

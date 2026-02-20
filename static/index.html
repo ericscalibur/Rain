@@ -697,6 +697,11 @@
                 color: var(--red);
                 border: 1px solid var(--red);
             }
+            .sandbox-badge.network {
+                background: rgba(74, 158, 255, 0.08);
+                color: var(--accent);
+                border: 1px solid var(--accent);
+            }
 
             /* Confidence badge */
             .conf-badge {
@@ -1470,10 +1475,18 @@
 
                 let sandboxBadge = "";
                 if (meta.sandbox) {
-                    const ok = meta.sandbox.all_ok;
-                    sandboxBadge = `<div class="sandbox-badge ${ok ? "ok" : "bad"}">
-      ${ok ? "✅" : "⚠️"} sandbox: ${meta.sandbox.verified}/${meta.sandbox.total} verified
+                    const { all_ok, verified, total, network } = meta.sandbox;
+                    if (network && total === 0) {
+                        sandboxBadge = `<div class="sandbox-badge network">🌐 network required — not sandboxable</div>`;
+                    } else if (network && total > 0) {
+                        sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">
+      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified · 🌐 network block skipped
     </div>`;
+                    } else {
+                        sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">
+      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified
+    </div>`;
+                    }
                 }
 
                 wrapper.innerHTML = `
