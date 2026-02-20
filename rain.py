@@ -1526,6 +1526,7 @@ class MultiAgentOrchestrator:
         self.sandbox = CodeSandbox(timeout=sandbox_timeout) if sandbox_enabled else None
         self.reflection_history: List[ReflectionResult] = []
         self.router = AgentRouter()
+        self.custom_agents: Dict[str, Agent] = {}  # id -> Agent, user-defined
         self._installed_models: List[str] = []
         self._current_process = None
 
@@ -1805,9 +1806,23 @@ class MultiAgentOrchestrator:
             self.memory.save_message("user", query)
 
         # ── 1. Route ──────────────────────────────────────────────────
-        agent_type = self.router.route(query)
-        primary_agent = self.agents[agent_type]
-        print(f"🔀 Routing to {self.router.explain(agent_type)}...")
+        # Check custom agents first — keyword match against agent name/description
+        custom_agent = None
+        if self.custom_agents:
+            query_lower = query.lower()
+            for agent in self.custom_agents.values():
+                keywords = [w.lower() for w in agent.description.split() if len(w) > 3]
+                if any(kw in query_lower for kw in keywords):
+                    custom_agent = agent
+                    break
+
+        if custom_agent:
+            primary_agent = custom_agent
+            print(f"🔀 Routing to custom agent: {custom_agent.description}...")
+        else:
+            agent_type = self.router.route(query)
+            primary_agent = self.agents[agent_type]
+            print(f"🔀 Routing to {self.router.explain(agent_type)}...")
 
         # ── 2. Primary Agent ──────────────────────────────────────────
         primary_response = self._query_agent(

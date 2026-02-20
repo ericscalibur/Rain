@@ -42,6 +42,7 @@ from rain import (
 
 _orchestrator: Optional[MultiAgentOrchestrator] = None
 _memory: Optional[RainMemory] = None
+_custom_agents: list = []  # [{id, name, prompt}]
 
 
 @asynccontextmanager
@@ -82,6 +83,11 @@ class ChatRequest(BaseModel):
     sandbox: bool = False
     sandbox_timeout: int = 10
     verbose: bool = False
+
+
+class CustomAgentRequest(BaseModel):
+    name: str
+    prompt: str
 
 
 class SessionSummary(BaseModel):
@@ -178,7 +184,43 @@ async def get_agents():
     return {
         "roster": roster,
         "suggestions": list(dict.fromkeys(missing)),
+        "custom_agents": _custom_agents,
     }
+
+
+@app.post("/api/agents/custom")
+async def add_custom_agent(req: CustomAgentRequest):
+    """Register a new custom agent with a user-defined system prompt."""
+    global _custom_agents, _orchestrator
+    if not req.name.strip() or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Name and prompt are required")
+
+    agent_id = str(uuid.uuid4())[:8]
+    entry = {"id": agent_id, "name": req.name.strip(), "prompt": req.prompt.strip()}
+    _custom_agents.append(entry)
+
+    # Register with orchestrator so it can be routed to
+    if _orchestrator:
+        from rain import Agent, AgentType
+        agent = Agent(
+            agent_type=AgentType.GENERAL,
+            model_name=_orchestrator.default_model,
+            system_prompt=req.prompt.strip(),
+            description=req.name.strip(),
+        )
+        _orchestrator.custom_agents[agent_id] = agent
+
+    return {"status": "ok", "id": agent_id}
+
+
+@app.delete("/api/agents/custom/{agent_id}")
+async def remove_custom_agent(agent_id: str):
+    """Remove a custom agent by ID."""
+    global _custom_agents, _orchestrator
+    _custom_agents = [a for a in _custom_agents if a["id"] != agent_id]
+    if _orchestrator and hasattr(_orchestrator, "custom_agents"):
+        _orchestrator.custom_agents.pop(agent_id, None)
+    return {"status": "ok"}
 
 
 @app.get("/api/sessions")

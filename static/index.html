@@ -209,6 +209,168 @@
                 font-family: var(--font-mono);
             }
 
+            /* ── Add agent button ─────────────────────────────────── */
+            .sidebar-section-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 16px 6px;
+            }
+
+            .sidebar-section-row .sidebar-section {
+                padding: 0;
+            }
+
+            .add-agent-btn {
+                background: none;
+                border: none;
+                cursor: pointer;
+                color: var(--text-3);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                transition: color 0.15s;
+                flex-shrink: 0;
+            }
+
+            .add-agent-btn:hover {
+                color: var(--accent);
+            }
+
+            /* ── Agent modal ──────────────────────────────────────── */
+            #agent-modal-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.6);
+                z-index: 500;
+                align-items: center;
+                justify-content: center;
+            }
+
+            #agent-modal-overlay.visible {
+                display: flex;
+            }
+
+            #agent-modal {
+                background: var(--bg-2);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 24px;
+                width: 480px;
+                max-width: calc(100vw - 32px);
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+
+            .modal-title {
+                font-size: 14px;
+                font-weight: 600;
+                color: var(--text);
+            }
+
+            .modal-subtitle {
+                font-size: 12px;
+                color: var(--text-3);
+                margin-top: -8px;
+            }
+
+            .modal-field {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+
+            .modal-label {
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--text-3);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .modal-input {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                color: var(--text);
+                font-family: var(--font-sans);
+                font-size: 13px;
+                padding: 8px 10px;
+                outline: none;
+                transition: border-color 0.15s;
+            }
+
+            .modal-input:focus {
+                border-color: var(--accent);
+            }
+
+            .modal-textarea {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                color: var(--text);
+                font-family: var(--font-mono);
+                font-size: 12px;
+                padding: 8px 10px;
+                outline: none;
+                resize: vertical;
+                min-height: 160px;
+                transition: border-color 0.15s;
+                line-height: 1.5;
+            }
+
+            .modal-textarea:focus {
+                border-color: var(--accent);
+            }
+
+            .modal-footer {
+                display: flex;
+                gap: 8px;
+                justify-content: flex-end;
+            }
+
+            .modal-btn {
+                background: none;
+                border: 1px solid var(--border);
+                color: var(--text-2);
+                cursor: pointer;
+                padding: 6px 14px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-family: var(--font-sans);
+                transition:
+                    color 0.15s,
+                    border-color 0.15s;
+            }
+
+            .modal-btn:hover {
+                color: var(--text);
+                border-color: var(--text-3);
+            }
+
+            .modal-btn.primary {
+                background: var(--accent);
+                border-color: var(--accent);
+                color: #fff;
+            }
+
+            .modal-btn.primary:hover {
+                opacity: 0.85;
+            }
+
+            .modal-btn.primary:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+
+            .agent-dot.custom {
+                background: var(--yellow);
+            }
+
             /* ── Sidebar footer ───────────────────────────────────── */
             .sidebar-footer {
                 padding: 12px 16px;
@@ -966,7 +1128,29 @@
                 </div>
 
                 <div class="sidebar-scroll">
-                    <div class="sidebar-section">Agents</div>
+                    <div class="sidebar-section-row">
+                        <div class="sidebar-section">Agents</div>
+                        <button
+                            class="add-agent-btn"
+                            id="add-agent-btn"
+                            title="Add custom agent"
+                        >
+                            <svg
+                                viewBox="0 0 16 16"
+                                width="16"
+                                height="16"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <circle cx="8" cy="8" r="6.5" />
+                                <line x1="8" y1="5" x2="8" y2="11" />
+                                <line x1="5" y1="8" x2="11" y2="8" />
+                            </svg>
+                        </button>
+                    </div>
                     <div id="agent-list">
                         <div
                             class="agent-item"
@@ -1152,6 +1336,47 @@
         </div>
         <!-- /app -->
 
+        <!-- Add agent modal -->
+        <div id="agent-modal-overlay">
+            <div id="agent-modal">
+                <div class="modal-title">Add Custom Agent</div>
+                <div class="modal-subtitle">
+                    Define a new specialist with a custom system prompt. It will
+                    be available for routing alongside the built-in agents.
+                </div>
+                <div class="modal-field">
+                    <label class="modal-label" for="agent-name-input"
+                        >Agent Name</label
+                    >
+                    <input
+                        class="modal-input"
+                        id="agent-name-input"
+                        type="text"
+                        placeholder="e.g. Security Expert, Rust Dev, Tax Advisor..."
+                        autocomplete="off"
+                    />
+                </div>
+                <div class="modal-field">
+                    <label class="modal-label" for="agent-prompt-input"
+                        >System Prompt</label
+                    >
+                    <textarea
+                        class="modal-textarea"
+                        id="agent-prompt-input"
+                        placeholder="You are a specialist in...&#10;&#10;Your strengths:&#10;- ...&#10;&#10;Rules:&#10;- ..."
+                    ></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="agent-modal-cancel">
+                        Cancel
+                    </button>
+                    <button class="modal-btn primary" id="agent-modal-save">
+                        Add Agent
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Full-window drag overlay -->
         <div id="window-drop-overlay">
             <div class="drop-icon">⛈️</div>
@@ -1179,6 +1404,16 @@
             const agentList = document.getElementById("agent-list");
             const sessionList = document.getElementById("session-list");
             const newChatBtn = document.getElementById("new-chat-btn");
+            const addAgentBtn = document.getElementById("add-agent-btn");
+            const agentModalOverlay = document.getElementById(
+                "agent-modal-overlay",
+            );
+            const agentNameInput = document.getElementById("agent-name-input");
+            const agentPromptInput =
+                document.getElementById("agent-prompt-input");
+            const agentModalCancel =
+                document.getElementById("agent-modal-cancel");
+            const agentModalSave = document.getElementById("agent-modal-save");
 
             // ── Init ───────────────────────────────────────────────────────────────
             async function init() {
@@ -1200,6 +1435,64 @@
                     setStatus("error", "Server unreachable");
                 }
             }
+
+            // ── Add Agent Modal ────────────────────────────────────────────────────
+            function openAgentModal() {
+                agentNameInput.value = "";
+                agentPromptInput.value = "";
+                agentModalOverlay.classList.add("visible");
+                agentNameInput.focus();
+            }
+
+            function closeAgentModal() {
+                agentModalOverlay.classList.remove("visible");
+            }
+
+            async function saveCustomAgent() {
+                const name = agentNameInput.value.trim();
+                const prompt = agentPromptInput.value.trim();
+                if (!name || !prompt) return;
+
+                agentModalSave.disabled = true;
+                agentModalSave.textContent = "Adding...";
+
+                try {
+                    const res = await fetch("/api/agents/custom", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name, prompt }),
+                    });
+                    if (res.ok) {
+                        closeAgentModal();
+                        await loadAgents();
+                    } else {
+                        const err = await res.json();
+                        appendSystemMessage(
+                            `❌ Failed to add agent: ${err.detail || "unknown error"}`,
+                        );
+                    }
+                } catch (e) {
+                    appendSystemMessage(`❌ Failed to add agent: ${e.message}`);
+                } finally {
+                    agentModalSave.disabled = false;
+                    agentModalSave.textContent = "Add Agent";
+                }
+            }
+
+            // Close modal on overlay click
+            agentModalOverlay.addEventListener("click", (e) => {
+                if (e.target === agentModalOverlay) closeAgentModal();
+            });
+
+            // Close modal on Escape
+            document.addEventListener("keydown", (e) => {
+                if (
+                    e.key === "Escape" &&
+                    agentModalOverlay.classList.contains("visible")
+                ) {
+                    closeAgentModal();
+                }
+            });
 
             async function newChat() {
                 if (state.thinking) return;
@@ -1245,6 +1538,19 @@
         <div class="agent-model">${shortModel(agent.model)}</div>
       `;
                         agentList.appendChild(div);
+                    }
+
+                    if (data.custom_agents && data.custom_agents.length > 0) {
+                        for (const agent of data.custom_agents) {
+                            const div = document.createElement("div");
+                            div.className = "agent-item";
+                            div.innerHTML = `
+        <div class="agent-dot custom"></div>
+        <div class="agent-name" style="flex:1">${escHtml(agent.name)}</div>
+        <button onclick="removeCustomAgent('${escHtml(agent.id)}')" title="Remove agent" style="background:none;border:none;color:var(--text-3);cursor:pointer;font-size:11px;padding:0 2px;line-height:1;" onmouseenter="this.style.color='var(--red)'" onmouseleave="this.style.color='var(--text-3)'">✕</button>
+      `;
+                            agentList.appendChild(div);
+                        }
                     }
 
                     if (data.suggestions && data.suggestions.length > 0) {
@@ -1989,6 +2295,10 @@
 
             newChatBtn.addEventListener("click", newChat);
 
+            addAgentBtn.addEventListener("click", openAgentModal);
+            agentModalCancel.addEventListener("click", closeAgentModal);
+            agentModalSave.addEventListener("click", saveCustomAgent);
+
             sidebarToggle.addEventListener("click", () => {
                 sidebar.classList.toggle("collapsed");
             });
@@ -2002,6 +2312,19 @@
                         '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Memory cleared.</div>';
                 } catch {}
             });
+
+            async function removeCustomAgent(id) {
+                try {
+                    await fetch(`/api/agents/custom/${id}`, {
+                        method: "DELETE",
+                    });
+                    await loadAgents();
+                } catch (e) {
+                    appendSystemMessage(
+                        `❌ Failed to remove agent: ${e.message}`,
+                    );
+                }
+            }
 
             // ── Boot ───────────────────────────────────────────────────────────────
             init();
