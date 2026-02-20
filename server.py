@@ -296,6 +296,19 @@ async def get_session_messages(session_id: str):
     return {"messages": [dict(r) for r in rows]}
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a session and all its messages."""
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    import sqlite3
+    with sqlite3.connect(_memory.db_path) as conn:
+        conn.execute("DELETE FROM vectors WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    return {"status": "ok"}
+
+
 @app.post("/api/new-session")
 async def new_session():
     """End the current session and start a fresh one."""

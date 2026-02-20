@@ -1664,13 +1664,54 @@
         <div class="session-summary">${s.summary || "Summarizing..."}</div>
         <div class="session-count">${s.message_count} messages</div>
       `;
-                        div.onclick = () => loadSessionMessages(s.id, div);
+
+                        // Click-and-hold (500ms) to delete
+                        let holdTimer = null;
+                        let didHold = false;
+                        div.addEventListener("mousedown", () => {
+                            didHold = false;
+                            holdTimer = setTimeout(async () => {
+                                didHold = true;
+                                holdTimer = null;
+                                if (confirm("Delete this conversation?")) {
+                                    await deleteSession(s.id);
+                                }
+                            }, 500);
+                        });
+                        const cancelHold = () => {
+                            if (holdTimer) {
+                                clearTimeout(holdTimer);
+                                holdTimer = null;
+                            }
+                        };
+                        div.addEventListener("mouseup", cancelHold);
+                        div.addEventListener("mouseleave", cancelHold);
+                        div.onclick = () => {
+                            if (didHold) {
+                                didHold = false;
+                                return;
+                            }
+                            loadSessionMessages(s.id, div);
+                        };
                         sessionList.appendChild(div);
                     }
                 } catch (e) {
                     console.error("loadSessions failed:", e);
                     sessionList.innerHTML =
                         '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Unavailable</div>';
+                }
+            }
+
+            async function deleteSession(sessionId) {
+                try {
+                    await fetch(`/api/sessions/${sessionId}`, {
+                        method: "DELETE",
+                    });
+                    await loadSessions();
+                } catch (e) {
+                    appendSystemMessage(
+                        `❌ Failed to delete session: ${e.message}`,
+                    );
                 }
             }
 
