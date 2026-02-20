@@ -601,6 +601,7 @@ Rules:
 - If a task genuinely requires a third-party package, say so explicitly and explain why no stdlib alternative exists — do not silently use it.
 - This is a sovereignty principle: Rain runs offline, on the user's hardware, with zero surprise dependencies.
 - For network tasks involving Bitcoin or blockchain data, use urllib.request to query public REST APIs (mempool.space, blockstream.info, blockchain.info). Example: urllib.request.urlopen("https://mempool.space/api/address/{addr}/txs"). Never assume a local Bitcoin node or bitcoin-cli is available unless the user explicitly says so.
+- MEMPOOL.SPACE API FORMAT: The endpoint https://mempool.space/api/address/{addr}/txs returns a JSON ARRAY directly — NOT an object with a "txs" key. Correct usage: `data = json.loads(response.read()); for tx in data:` — NOT `data["txs"]`.
 - Any `while True` polling loop MUST include `import time` and `time.sleep(N)` at the end of the loop body. Never write an infinite loop without a sleep — it will peg the CPU and make the script unusable.
 - Be direct. No filler. Show the code.""",
 
@@ -1204,6 +1205,19 @@ Improved Response:"""
 
         for idx, (lang, code) in enumerate(code_blocks):
             block_label = f"block {idx + 1}/{len(code_blocks)}"
+
+            # Long-running scripts (while True polling loops) are not sandboxable —
+            # they run forever by design. Skip verification and pass through unchanged.
+            if re.search(r'^\s*while\s+True\s*:', code, re.MULTILINE):
+                print(f"\n⏱️  Long-running script detected ({block_label}) — skipping sandbox")
+                final_results.append(SandboxResult(
+                    success=False, stdout='', stderr='long-running',
+                    return_code=-1, language=lang,
+                    duration_seconds=0.0,
+                    error_message='long-running'
+                ))
+                continue
+
             print(f"\n🔬 Testing suggested code ({block_label}, {lang})...")
 
             result = self.sandbox.run(code, language=lang)

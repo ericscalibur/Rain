@@ -1475,12 +1475,21 @@
 
                 let sandboxBadge = "";
                 if (meta.sandbox) {
-                    const { all_ok, verified, total, network } = meta.sandbox;
-                    if (network && total === 0) {
+                    const { all_ok, verified, total, network, long_running } =
+                        meta.sandbox;
+                    if (long_running && total === 0) {
+                        sandboxBadge = `<div class="sandbox-badge network">⏱️ long-running script — not sandboxable</div>`;
+                    } else if (network && total === 0) {
                         sandboxBadge = `<div class="sandbox-badge network">🌐 network required — not sandboxable</div>`;
-                    } else if (network && total > 0) {
+                    } else if ((network || long_running) && total > 0) {
+                        const skipped =
+                            network && long_running
+                                ? "🌐 ⏱️ blocks skipped"
+                                : network
+                                  ? "🌐 network block skipped"
+                                  : "⏱️ long-running block skipped";
                         sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">
-      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified · 🌐 network block skipped
+      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified · ${skipped}
     </div>`;
                     } else {
                         sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">

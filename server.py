@@ -343,21 +343,27 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             if result:
                 sandbox_summary = None
                 if result.sandbox_results:
-                    network_errors = [
-                        r for r in result.sandbox_results
-                        if not r.success and any(x in (r.stderr + (r.error_message or "")).lower()
-                            for x in ["urlerror", "connectionrefused", "nodename nor servname",
-                                       "name or service not known", "network is unreachable",
-                                       "connection timed out", "urlopen error", "ssl"])
-                    ]
-                    testable = [r for r in result.sandbox_results if r not in network_errors]
+                    def _is_network(r):
+                        err = (r.stderr + (r.error_message or "")).lower()
+                        return not r.success and any(x in err for x in [
+                            "urlerror", "connectionrefused", "nodename nor servname",
+                            "name or service not known", "network is unreachable",
+                            "connection timed out", "urlopen error", "ssl",
+                        ])
+                    def _is_long_running(r):
+                        err = (r.error_message or "").lower()
+                        return not r.success and "long-running" in err
+
+                    skipped = [r for r in result.sandbox_results if _is_network(r) or _is_long_running(r)]
+                    testable = [r for r in result.sandbox_results if r not in skipped]
                     verified = sum(1 for r in testable if r.success)
                     total = len(testable)
                     sandbox_summary = {
                         "verified": verified,
                         "total": total,
                         "all_ok": verified == total if total > 0 else True,
-                        "network": len(network_errors) > 0,
+                        "network": any(_is_network(r) for r in skipped),
+                        "long_running": any(_is_long_running(r) for r in skipped),
                     }
 
                 emit({
