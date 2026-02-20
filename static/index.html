@@ -1298,7 +1298,7 @@
                         });
                         div.innerHTML = `
         <div class="session-date">${dateStr}</div>
-        <div class="session-summary">${s.summary || "No summary"}</div>
+        <div class="session-summary">${s.summary || "Summarizing..."}</div>
         <div class="session-count">${s.message_count} messages</div>
       `;
                         div.onclick = () => loadSessionMessages(s.id, div);
