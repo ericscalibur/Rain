@@ -1778,8 +1778,14 @@ class MultiAgentOrchestrator:
             f"Original user query:\n{query}\n\n"
             f"Primary response:\n{primary}\n\n"
             f"Critique of that response:\n{critique}\n\n"
-            f"Produce the best possible final answer, addressing every valid "
-            f"criticism. Do not mention this synthesis process."
+            f"Produce the best possible final answer following these rules:\n"
+            f"1. Start DIRECTLY with the answer. No preamble like 'Here is a revised answer' or 'Here is a final answer'.\n"
+            f"2. End with the answer. No postamble like 'I have addressed the following criticisms' or bullet lists summarising what you changed.\n"
+            f"3. Only include code if the original query explicitly asked for code. Factual and conversational questions get prose only.\n"
+            f"4. Never fabricate facts. If uncertain, say so.\n"
+            f"5. If the query asked about current events and web search results were provided, use them and cite sources.\n"
+            f"6. Use stdlib only (urllib, json, sqlite3). Never use requests, pandas, or any third-party package.\n"
+            f"7. Write as if you are the only one the user will ever read. You are not revising — you are answering."
         )
 
     # ------------------------------------------------------------------
