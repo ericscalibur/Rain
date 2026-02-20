@@ -375,25 +375,33 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             _orchestrator._parse_reflection_rating = patched_parse_rating
 
-            # Build context-aware query from recent history so short
-            # follow-ups like "yes" carry full conversation context.
-            # Strip code blocks from history to avoid poisoning non-code queries.
+            # Only inject the single preceding exchange for short follow-ups
+            # (e.g. "yes", "elaborate", "continue", "tell me more").
+            # Longer messages have enough context on their own.
             query = req.message
-            if req.history and len(req.history) > 0:
+            is_short_followup = len(req.message.strip()) < 60
+            if is_short_followup and req.history and len(req.history) >= 2:
                 import re as _re
-                recent = req.history[-6:]  # last 3 exchanges (6 messages)
-                context_lines = []
-                for msg in recent:
-                    role = "User" if msg.get("role") == "user" else "Rain"
-                    content = msg.get("content", "")
-                    # Strip fenced code blocks — keep prose only
-                    content = _re.sub(r'```[\s\S]*?```', '[code block]', content)
-                    content = content.strip()[:300]
-                    if content:
-                        context_lines.append(f"{role}: {content}")
-                if context_lines:
-                    context_block = "\n".join(context_lines)
-                    query = f"[Recent conversation:\n{context_block}\n]\n\nCurrent question: {req.message}"
+                # Find the last user message and last Rain response
+                last_user = next(
+                    (m for m in reversed(req.history) if m.get("role") == "user"), None
+                )
+                last_rain = next(
+                    (m for m in reversed(req.history) if m.get("role") == "assistant"), None
+                )
+                if last_user and last_rain:
+                    def _strip_code(text):
+                        return _re.sub(r'```[\s\S]*?```', '[code]', text).strip()[:250]
+                    prev_q = _strip_code(last_user.get("content", ""))
+                    prev_a = _strip_code(last_rain.get("content", ""))
+                    if prev_q and prev_a:
+                        query = (
+                            f"[Previous exchange:\n"
+                            f"User: {prev_q}\n"
+                            f"Rain: {prev_a}\n"
+                            f"]\n\n"
+                            f"User follow-up: {req.message}"
+                        )
 
             # Run the full pipeline
             result = _orchestrator.recursive_reflect(query, verbose=req.verbose)
