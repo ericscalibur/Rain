@@ -669,7 +669,9 @@ Your job:
 Rules:
 - The final answer should be better than either input alone
 - Preserve all correct code, technical details, and examples from the primary response
-- Be concise. Don't pad. Don't repeat yourself.""",
+- Be concise. Don't pad. Don't repeat yourself.
+- STDLIB FIRST — if the primary response used stdlib (urllib, json, sqlite3, etc.), you MUST preserve that. Never substitute requests, SQLAlchemy, or any third-party package. This is non-negotiable.
+- If the reflection agent suggested using a third-party package as an improvement, ignore that suggestion. Stdlib is the correct choice.""",
 
     AgentType.GENERAL: """You are Rain, a sovereign AI assistant running locally on the user's computer through Ollama.
 

@@ -83,6 +83,7 @@ class ChatRequest(BaseModel):
     sandbox: bool = False
     sandbox_timeout: int = 10
     verbose: bool = False
+    history: list = []  # recent messages [{role, content}] from the browser
 
 
 class CustomAgentRequest(BaseModel):
@@ -374,8 +375,21 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             _orchestrator._parse_reflection_rating = patched_parse_rating
 
+            # Build context-aware query from recent history so short
+            # follow-ups like "yes" carry full conversation context
+            query = req.message
+            if req.history and len(req.history) > 0:
+                recent = req.history[-6:]  # last 3 exchanges (6 messages)
+                context_lines = []
+                for msg in recent:
+                    role = "User" if msg.get("role") == "user" else "Rain"
+                    content = msg.get("content", "")[:400]
+                    context_lines.append(f"{role}: {content}")
+                context_block = "\n".join(context_lines)
+                query = f"[Conversation so far:\n{context_block}\n]\n\nUser: {req.message}"
+
             # Run the full pipeline
-            result = _orchestrator.recursive_reflect(req.message, verbose=req.verbose)
+            result = _orchestrator.recursive_reflect(query, verbose=req.verbose)
 
             # Restore originals
             _orchestrator.router.route = original_route
