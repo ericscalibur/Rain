@@ -865,6 +865,20 @@
                 border: 1px solid var(--accent);
             }
 
+            .search-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 11px;
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-top: 4px;
+                font-family: var(--font-mono);
+                background: rgba(74, 158, 255, 0.08);
+                color: var(--accent);
+                border: 1px solid var(--accent);
+            }
+
             /* Confidence badge */
             .conf-badge {
                 display: inline-flex;
@@ -1191,6 +1205,15 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-row">
+                        <span class="toggle-label">
+                            🌐 <span>Web Search</span>
+                        </span>
+                        <label class="toggle">
+                            <input type="checkbox" id="websearch-toggle" />
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="btn-ghost" id="forget-btn">
                         🗑️ Forget all memory
                     </button>
@@ -1399,6 +1422,7 @@
             const statusDot = document.getElementById("status-dot");
             const statusText = document.getElementById("status-text");
             const sandboxToggle = document.getElementById("sandbox-toggle");
+            const webSearchToggle = document.getElementById("websearch-toggle");
             const forgetBtn = document.getElementById("forget-btn");
             const sidebar = document.getElementById("sidebar");
             const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -1677,6 +1701,7 @@
                         body: JSON.stringify({
                             message: text,
                             sandbox: sandboxToggle.checked,
+                            web_search: webSearchToggle.checked,
                             history: state.history.slice(0, -1), // send history excluding current message
                         }),
                     });
@@ -1819,6 +1844,10 @@
                     }
                 }
 
+                const searchBadge = meta.search_results
+                    ? `<div class="search-badge">🌐 web search · ${meta.search_results} result${meta.search_results !== 1 ? "s" : ""} retrieved</div>`
+                    : "";
+
                 wrapper.innerHTML = `
     <div class="msg">
       <div class="msg-header">
@@ -1827,7 +1856,7 @@
         ${metaStr}
       </div>
       <div class="msg-body">${renderMarkdown(content)}</div>
-      ${sandboxBadge}
+      ${sandboxBadge}${searchBadge}
     </div>
   `;
                 messagesEl.appendChild(wrapper);

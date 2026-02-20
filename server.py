@@ -84,11 +84,57 @@ class ChatRequest(BaseModel):
     sandbox_timeout: int = 10
     verbose: bool = False
     history: list = []  # recent messages [{role, content}] from the browser
+    web_search: bool = False
 
 
 class CustomAgentRequest(BaseModel):
     name: str
     prompt: str
+
+
+def _duckduckgo_search(query: str, max_results: int = 5) -> list:
+    """
+    Search DuckDuckGo using their free HTML endpoint. No API key required.
+    Returns a list of {title, snippet, url} dicts.
+    """
+    import urllib.request
+    import urllib.parse
+    import re
+
+    try:
+        params = urllib.parse.urlencode({"q": query, "kl": "us-en"})
+        url = f"https://html.duckduckgo.com/html/?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Rain/1.0)",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+
+        results = []
+        # Extract result blocks
+        blocks = re.findall(
+            r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
+            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+            html,
+            re.DOTALL,
+        )
+        for url_raw, title_raw, snippet_raw in blocks[:max_results]:
+            title = re.sub(r"<[^>]+>", "", title_raw).strip()
+            snippet = re.sub(r"<[^>]+>", "", snippet_raw).strip()
+            # DuckDuckGo wraps URLs — extract the real one
+            url_match = re.search(r"uddg=([^&]+)", url_raw)
+            real_url = urllib.parse.unquote(url_match.group(1)) if url_match else url_raw
+            if title and snippet:
+                results.append({"title": title, "snippet": snippet, "url": real_url})
+
+        return results
+    except Exception as e:
+        print(f"[web search] failed: {e}")
+        return []
 
 
 class SessionSummary(BaseModel):
@@ -375,6 +421,33 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             _orchestrator._parse_reflection_rating = patched_parse_rating
 
+            # ── Web search (if enabled) ───────────────────────────────────────
+            search_results_count = 0
+            if req.web_search:
+                emit({"type": "progress", "message": "🌐 Searching the web..."})
+                search_results = _duckduckgo_search(req.message, max_results=5)
+                search_results_count = len(search_results)
+                if search_results:
+                    snippets = "\n\n".join(
+                        f"[{r['title']}]\n{r['snippet']}\nSource: {r['url']}"
+                        for r in search_results
+                    )
+                    emit({"type": "progress", "message": f"🌐 {search_results_count} results retrieved"})
+                    # Prepend search context to message before building query
+                    req = req.model_copy(update={
+                        "message": (
+                            f"[Web search results for: {req.message}]\n\n"
+                            f"{snippets}\n\n"
+                            f"---\n"
+                            f"Using the above search results as context, answer this question accurately. "
+                            f"Cite sources where relevant. If the search results don't contain enough "
+                            f"information, say so.\n\n"
+                            f"Question: {req.message}"
+                        )
+                    })
+                else:
+                    emit({"type": "progress", "message": "🌐 No results found — using local knowledge"})
+
             # Only inject the single preceding exchange for short follow-ups
             # (e.g. "yes", "elaborate", "continue", "tell me more").
             # Longer messages have enough context on their own.
@@ -445,6 +518,7 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                     "iterations": result.iteration,
                     "improvements": result.improvements,
                     "sandbox": sandbox_summary,
+                    "search_results": search_results_count if req.web_search else 0,
                 })
             else:
                 emit({"type": "error", "message": "No response from model."})
