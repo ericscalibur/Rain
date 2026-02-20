@@ -423,6 +423,7 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             # ── Web search (if enabled) ───────────────────────────────────────
             search_results_count = 0
+            search_augmented_message = None
             if req.web_search:
                 emit({"type": "progress", "message": "🌐 Searching the web..."})
                 search_results = _duckduckgo_search(req.message, max_results=5)
@@ -433,25 +434,22 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                         for r in search_results
                     )
                     emit({"type": "progress", "message": f"🌐 {search_results_count} results retrieved"})
-                    # Prepend search context to message before building query
-                    req = req.model_copy(update={
-                        "message": (
-                            f"[Web search results for: {req.message}]\n\n"
-                            f"{snippets}\n\n"
-                            f"---\n"
-                            f"Using the above search results as context, answer this question accurately. "
-                            f"Cite sources where relevant. If the search results don't contain enough "
-                            f"information, say so.\n\n"
-                            f"Question: {req.message}"
-                        )
-                    })
+                    search_augmented_message = (
+                        f"[Web search results for: {req.message}]\n\n"
+                        f"{snippets}\n\n"
+                        f"---\n"
+                        f"Using the above search results as context, answer this question accurately. "
+                        f"Cite sources where relevant. If the search results don't contain enough "
+                        f"information, say so.\n\n"
+                        f"Question: {req.message}"
+                    )
                 else:
                     emit({"type": "progress", "message": "🌐 No results found — using local knowledge"})
 
             # Only inject the single preceding exchange for short follow-ups
             # (e.g. "yes", "elaborate", "continue", "tell me more").
             # Longer messages have enough context on their own.
-            query = req.message
+            query = search_augmented_message if search_augmented_message else req.message
             is_short_followup = len(req.message.strip()) < 60
             if is_short_followup and req.history and len(req.history) >= 2:
                 import re as _re
