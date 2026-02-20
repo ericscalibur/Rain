@@ -1438,7 +1438,6 @@
             const state = {
                 thinking: false,
                 currentProgress: null,
-                history: [], // [{role, content}] for current chat context
             };
 
             // ── DOM refs ───────────────────────────────────────────────────────────
@@ -1789,11 +1788,6 @@
                 state.currentProgress = progressEl;
 
                 try {
-                    // Track user message in history
-                    state.history.push({ role: "user", content: text });
-                    if (state.history.length > 12)
-                        state.history = state.history.slice(-12);
-
                     _abortController = new AbortController();
                     const res = await fetch("/api/chat", {
                         method: "POST",
@@ -1803,7 +1797,6 @@
                             message: text,
                             sandbox: sandboxToggle.checked,
                             web_search: webSearchToggle.checked,
-                            history: state.history.slice(0, -1), // send history excluding current message
                         }),
                     });
 
@@ -1865,13 +1858,6 @@
                     case "done":
                         removeProgress(progressEl);
                         appendRainMessage(event.content, event);
-                        // Track Rain's response in history
-                        state.history.push({
-                            role: "assistant",
-                            content: event.content,
-                        });
-                        if (state.history.length > 12)
-                            state.history = state.history.slice(-12);
                         loadSessions(); // refresh sidebar
                         setStatus("ok", _lastModel || "ready");
                         break;
@@ -1890,7 +1876,6 @@
                     .querySelectorAll(".msg, .msg-progress")
                     .forEach((el) => el.remove());
                 emptyState.style.display = "none";
-                state.history = []; // reset conversation context
             }
 
             function appendUserMessage(text) {

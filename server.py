@@ -83,7 +83,7 @@ class ChatRequest(BaseModel):
     sandbox: bool = False
     sandbox_timeout: int = 10
     verbose: bool = False
-    history: list = []  # recent messages [{role, content}] from the browser
+
     web_search: bool = False
 
 
@@ -459,33 +459,9 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                 else:
                     emit({"type": "progress", "message": "🌐 No results found — using local knowledge"})
 
-            # Only inject the single preceding exchange for short follow-ups
-            # (e.g. "yes", "elaborate", "continue", "tell me more").
-            # Longer messages have enough context on their own.
+            # Memory system (working memory = last 20 messages) already handles
+            # continuity — no additional history injection needed here.
             query = search_augmented_message if search_augmented_message else req.message
-            is_short_followup = len(req.message.strip()) < 60
-            if is_short_followup and req.history and len(req.history) >= 2:
-                import re as _re
-                # Find the last user message and last Rain response
-                last_user = next(
-                    (m for m in reversed(req.history) if m.get("role") == "user"), None
-                )
-                last_rain = next(
-                    (m for m in reversed(req.history) if m.get("role") == "assistant"), None
-                )
-                if last_user and last_rain:
-                    def _strip_code(text):
-                        return _re.sub(r'```[\s\S]*?```', '[code]', text).strip()[:250]
-                    prev_q = _strip_code(last_user.get("content", ""))
-                    prev_a = _strip_code(last_rain.get("content", ""))
-                    if prev_q and prev_a:
-                        query = (
-                            f"[Previous exchange:\n"
-                            f"User: {prev_q}\n"
-                            f"Rain: {prev_a}\n"
-                            f"]\n\n"
-                            f"User follow-up: {req.message}"
-                        )
 
             # Run the full pipeline
             result = _orchestrator.recursive_reflect(query, verbose=req.verbose)
