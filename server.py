@@ -376,17 +376,24 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             _orchestrator._parse_reflection_rating = patched_parse_rating
 
             # Build context-aware query from recent history so short
-            # follow-ups like "yes" carry full conversation context
+            # follow-ups like "yes" carry full conversation context.
+            # Strip code blocks from history to avoid poisoning non-code queries.
             query = req.message
             if req.history and len(req.history) > 0:
+                import re as _re
                 recent = req.history[-6:]  # last 3 exchanges (6 messages)
                 context_lines = []
                 for msg in recent:
                     role = "User" if msg.get("role") == "user" else "Rain"
-                    content = msg.get("content", "")[:400]
-                    context_lines.append(f"{role}: {content}")
-                context_block = "\n".join(context_lines)
-                query = f"[Conversation so far:\n{context_block}\n]\n\nUser: {req.message}"
+                    content = msg.get("content", "")
+                    # Strip fenced code blocks — keep prose only
+                    content = _re.sub(r'```[\s\S]*?```', '[code block]', content)
+                    content = content.strip()[:300]
+                    if content:
+                        context_lines.append(f"{role}: {content}")
+                if context_lines:
+                    context_block = "\n".join(context_lines)
+                    query = f"[Recent conversation:\n{context_block}\n]\n\nCurrent question: {req.message}"
 
             # Run the full pipeline
             result = _orchestrator.recursive_reflect(query, verbose=req.verbose)
