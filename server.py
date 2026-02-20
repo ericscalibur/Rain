@@ -57,7 +57,10 @@ async def lifespan(app: FastAPI):
     )
     yield
     if _memory:
+        summary = _memory.generate_summary()
         _memory.end_session()
+        if summary:
+            _memory.update_summary(summary)
 
 
 app = FastAPI(
@@ -202,6 +205,36 @@ async def get_session_messages(session_id: str):
             (session_id,),
         ).fetchall()
     return {"messages": [dict(r) for r in rows]}
+
+
+@app.post("/api/new-session")
+async def new_session():
+    """End the current session and start a fresh one."""
+    global _memory, _orchestrator
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    import threading
+
+    # Hold a reference to the ending session, end it synchronously so it
+    # appears in the sidebar immediately (ended_at IS NOT NULL filter)
+    ending_memory = _memory
+    ending_memory.end_session()
+
+    # Create a brand-new RainMemory — generates a fresh UUID
+    _memory = RainMemory()
+    _memory.start_session(model=_orchestrator.default_model if _orchestrator else "llama3.1")
+    if _orchestrator:
+        _orchestrator.memory = _memory
+
+    # Summarize the ended session in the background
+    def _summarize_in_background():
+        summary = ending_memory.generate_summary()
+        if summary:
+            ending_memory.update_summary(summary)
+    threading.Thread(target=_summarize_in_background, daemon=True).start()
+
+    return {"status": "ok", "session_id": _memory.session_id}
 
 
 @app.post("/api/forget")

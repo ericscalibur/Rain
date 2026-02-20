@@ -92,6 +92,74 @@ class RainMemory:
                 (datetime.now().isoformat(), summary, self.session_id)
             )
 
+    def update_summary(self, summary: str):
+        """Update the summary for the current session after it has ended."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE sessions SET summary = ? WHERE id = ?",
+                (summary, self.session_id)
+            )
+
+    def generate_summary(self) -> Optional[str]:
+        """
+        Summarize the current session's messages using Ollama HTTP API directly.
+        Returns a short 1-2 sentence summary, or None if there's nothing to summarize.
+        """
+        import urllib.request
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT role, content FROM messages
+                       WHERE session_id = ?
+                       ORDER BY timestamp ASC""",
+                    (self.session_id,),
+                ).fetchall()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        # Build a compact transcript for the model
+        transcript = ""
+        for row in rows:
+            role = "User" if row["role"] == "user" else "Rain"
+            content = row["content"][:300] + "..." if len(row["content"]) > 300 else row["content"]
+            transcript += f"{role}: {content}\n\n"
+
+        prompt = (
+            "Summarize this conversation in one short sentence (max 120 characters). "
+            "Reply with ONLY the summary, no preamble, no labels.\n\n"
+            f"{transcript}\nSummary:"
+        )
+
+        try:
+            payload = json.dumps({
+                "model": "llama3.1",
+                "prompt": prompt,
+                "stream": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:11434/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            summary = data.get("response", "").strip()
+            # Strip any model preamble like "Here is a summary:" or "Summary:"
+            for prefix in ("summary:", "here is", "here's"):
+                if summary.lower().startswith(prefix):
+                    summary = summary[summary.index(":") + 1:].strip()
+            # Cap at 120 chars at a word boundary
+            if len(summary) > 120:
+                summary = summary[:120].rsplit(" ", 1)[0].rstrip(".,;") + "…"
+            return summary if summary else None
+        except Exception:
+            return None
+
     def save_message(self, role: str, content: str, is_code: bool = False, confidence: float = None):
         """Save a single message and asynchronously embed it for semantic search."""
         with sqlite3.connect(self.db_path) as conn:
@@ -215,7 +283,7 @@ class RainMemory:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT s.id, s.started_at, s.summary, s.model,
+                """SELECT s.id, s.started_at, s.ended_at, s.summary, s.model,
                           COUNT(m.id) as message_count
                    FROM sessions s
                    LEFT JOIN messages m ON s.id = m.session_id
