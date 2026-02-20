@@ -1035,6 +1035,16 @@
                 cursor: not-allowed;
             }
 
+            #send-btn.stop {
+                background: var(--red);
+                opacity: 1;
+                cursor: pointer;
+            }
+
+            #send-btn.stop:hover {
+                background: #e05252;
+            }
+
             #send-btn svg {
                 width: 14px;
                 height: 14px;
@@ -1339,7 +1349,9 @@
                                 drag a file</span
                             >
                             <button id="send-btn" title="Send">
+                                <!-- Send icon -->
                                 <svg
+                                    id="send-icon"
                                     viewBox="0 0 16 16"
                                     fill="none"
                                     stroke="currentColor"
@@ -1349,6 +1361,21 @@
                                 >
                                     <line x1="8" y1="13" x2="8" y2="3" />
                                     <polyline points="4,7 8,3 12,7" />
+                                </svg>
+                                <!-- Stop icon (hidden by default) -->
+                                <svg
+                                    id="stop-icon"
+                                    viewBox="0 0 16 16"
+                                    fill="currentColor"
+                                    style="display: none"
+                                >
+                                    <rect
+                                        x="4"
+                                        y="4"
+                                        width="8"
+                                        height="8"
+                                        rx="1.5"
+                                    />
                                 </svg>
                             </button>
                         </div>
@@ -1673,16 +1700,47 @@
             }
 
             // ── Chat ───────────────────────────────────────────────────────────────
+            let _abortController = null;
+
+            function setThinkingState(thinking) {
+                state.thinking = thinking;
+                const sendIcon = document.getElementById("send-icon");
+                const stopIcon = document.getElementById("stop-icon");
+                if (thinking) {
+                    sendBtn.disabled = false;
+                    sendBtn.classList.add("stop");
+                    sendBtn.title = "Stop";
+                    sendIcon.style.display = "none";
+                    stopIcon.style.display = "";
+                } else {
+                    sendBtn.disabled = false;
+                    sendBtn.classList.remove("stop");
+                    sendBtn.title = "Send";
+                    sendIcon.style.display = "";
+                    stopIcon.style.display = "none";
+                }
+            }
+
+            function stopGeneration() {
+                if (_abortController) {
+                    _abortController.abort();
+                    _abortController = null;
+                }
+            }
+
             async function sendMessage() {
+                if (state.thinking) {
+                    stopGeneration();
+                    return;
+                }
                 const text = chatInput.value.trim();
-                if (!text || state.thinking) return;
+                if (!text) return;
 
                 appendUserMessage(text);
                 chatInput.value = "";
                 autoResize();
 
-                state.thinking = true;
-                sendBtn.disabled = true;
+                setThinkingState(true);
                 setStatus("thinking", "thinking...");
 
                 // Create progress block
@@ -1695,9 +1753,11 @@
                     if (state.history.length > 12)
                         state.history = state.history.slice(-12);
 
+                    _abortController = new AbortController();
                     const res = await fetch("/api/chat", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
+                        signal: _abortController.signal,
                         body: JSON.stringify({
                             message: text,
                             sandbox: sandboxToggle.checked,
@@ -1729,11 +1789,16 @@
                     }
                 } catch (e) {
                     removeProgress(progressEl);
-                    appendSystemMessage(`❌ ${e.message}`);
-                    setStatus("error", "error");
+                    if (e.name === "AbortError") {
+                        appendSystemMessage("⛔ Stopped.");
+                        setStatus("ok", "stopped");
+                    } else {
+                        appendSystemMessage(`❌ ${e.message}`);
+                        setStatus("error", "error");
+                    }
                 } finally {
-                    state.thinking = false;
-                    sendBtn.disabled = false;
+                    _abortController = null;
+                    setThinkingState(false);
                 }
             }
 
@@ -2335,7 +2400,10 @@
 
             chatInput.addEventListener("input", autoResize);
 
-            sendBtn.addEventListener("click", sendMessage);
+            sendBtn.addEventListener("click", () => {
+                if (state.thinking) stopGeneration();
+                else sendMessage();
+            });
 
             newChatBtn.addEventListener("click", newChat);
 
