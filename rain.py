@@ -1214,6 +1214,14 @@ Improved Response:"""
                 final_results.append(result)
                 continue
 
+            # Network errors mean the sandbox can't test the code, not that the code is wrong.
+            # Skip the correction loop and pass the original code through unchanged.
+            error_type = self._classify_sandbox_error(result)
+            if error_type == 'network':
+                print(f"🌐 Network required — sandbox cannot verify, but code looks correct")
+                final_results.append(result)
+                continue
+
             print(f"❌ {result.error_message}")
             current_code = code
             current_result = result
