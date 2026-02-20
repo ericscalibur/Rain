@@ -1150,15 +1150,22 @@ Improved Response:"""
                 "- The goal is runnable, demonstrable code — not a live API call\n"
             )
         elif error_type == 'missing_module':
+            # Extract the specific missing module name from the error
+            import re as _re
+            mod_match = _re.search(r"No module named '([^']+)'", err or '')
+            bad_module = mod_match.group(1) if mod_match else "a third-party package"
             if lang == 'python':
                 constraint_note = (
-                    "\n\nSANDBOX CONSTRAINT — STDLIB ONLY:\n"
-                    "No third-party pip packages are available. You MUST use only Python standard "
-                    "library modules. Common substitutions:\n"
-                    "- requests → urllib.request + json\n"
-                    "- numpy → math, statistics, or plain lists\n"
-                    "- pandas → csv module or plain dicts\n"
-                    "- bs4/beautifulsoup → html.parser\n"
+                    f"\n\nSANDBOX CONSTRAINT — STDLIB ONLY:\n"
+                    f"The code failed because it imported '{bad_module}', which is NOT available. "
+                    f"You MUST NOT use '{bad_module}' or any other third-party pip package.\n"
+                    f"Rewrite using ONLY Python standard library modules. Mandatory substitutions:\n"
+                    f"- requests / httpx / urllib3 → urllib.request + json\n"
+                    f"- numpy → math, statistics, or plain lists\n"
+                    f"- pandas → csv module or plain dicts\n"
+                    f"- bs4/beautifulsoup → html.parser\n"
+                    f"- blockchain / bitcoin / web3 → urllib.request to query a public REST API\n"
+                    f"Do NOT attempt to import '{bad_module}' again under any circumstances.\n"
                 )
             else:
                 constraint_note = (
@@ -1217,9 +1224,21 @@ Improved Response:"""
         for idx, (lang, code) in enumerate(code_blocks):
             block_label = f"block {idx + 1}/{len(code_blocks)}"
 
-            # Long-running scripts (while True polling loops) are not sandboxable —
-            # they run forever by design. Skip verification and pass through unchanged.
-            if re.search(r'^\s*while\s+True\s*:', code, re.MULTILINE):
+            # Long-running scripts are not sandboxable — skip verification.
+            # Detect: explicit while True loops, OR top-level time.sleep() calls
+            # (polling scripts that sleep between iterations).
+            def _is_long_running(code: str) -> bool:
+                if re.search(r'^\s*while\s+True\s*:', code, re.MULTILINE):
+                    return True
+                # Top-level sleep: time.sleep(...) not inside a def/class/if/for/while
+                for line in code.splitlines():
+                    stripped = line.lstrip()
+                    indent = len(line) - len(stripped)
+                    if indent == 0 and re.match(r'(time\.sleep|sleep)\s*\(', stripped):
+                        return True
+                return False
+
+            if _is_long_running(code):
                 print(f"\n⏱️  Long-running script detected ({block_label}) — skipping sandbox")
                 final_results.append(SandboxResult(
                     success=False, stdout='', stderr='long-running',
