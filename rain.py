@@ -601,6 +601,7 @@ Rules:
 - If a task genuinely requires a third-party package, say so explicitly and explain why no stdlib alternative exists — do not silently use it.
 - This is a sovereignty principle: Rain runs offline, on the user's hardware, with zero surprise dependencies.
 - For network tasks involving Bitcoin or blockchain data, use urllib.request to query public REST APIs (mempool.space, blockstream.info, blockchain.info). Example: urllib.request.urlopen("https://mempool.space/api/address/{addr}/txs"). Never assume a local Bitcoin node or bitcoin-cli is available unless the user explicitly says so.
+- Any `while True` polling loop MUST include `import time` and `time.sleep(N)` at the end of the loop body. Never write an infinite loop without a sleep — it will peg the CPU and make the script unusable.
 - Be direct. No filler. Show the code.""",
 
     AgentType.LOGIC: """You are Rain's Logic Agent — a sovereign AI running locally, specializing in reasoning and planning.
