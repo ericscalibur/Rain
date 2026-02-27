@@ -879,6 +879,118 @@
                 border: 1px solid var(--accent);
             }
 
+            /* ── Feedback (Phase 5B) ──────────────────────────────── */
+            .msg-feedback {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-top: 10px;
+                padding-top: 8px;
+                border-top: 1px solid var(--border);
+            }
+
+            .feedback-btn {
+                background: none;
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 2px 9px;
+                font-size: 13px;
+                cursor: pointer;
+                color: var(--text-3);
+                transition:
+                    border-color 0.15s,
+                    background 0.15s,
+                    color 0.15s;
+                line-height: 1.6;
+            }
+
+            .feedback-btn:hover.good {
+                border-color: #4ade80;
+                background: rgba(74, 222, 128, 0.08);
+                color: #4ade80;
+            }
+
+            .feedback-btn:hover.bad {
+                border-color: #f87171;
+                background: rgba(248, 113, 113, 0.08);
+                color: #f87171;
+            }
+
+            .feedback-done {
+                font-size: 12px;
+                color: var(--text-3);
+                padding: 2px 0;
+            }
+
+            .feedback-correction {
+                margin-top: 8px;
+                padding: 10px 12px;
+                background: var(--bg-2);
+                border-radius: 8px;
+                border: 1px solid var(--border);
+            }
+
+            .correction-label {
+                font-size: 12px;
+                color: var(--text-3);
+                margin-bottom: 6px;
+            }
+
+            .correction-input {
+                width: 100%;
+                background: var(--bg-1);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                color: var(--text-1);
+                font-size: 13px;
+                padding: 8px 10px;
+                min-height: 64px;
+                resize: vertical;
+                font-family: inherit;
+                box-sizing: border-box;
+                outline: none;
+                transition: border-color 0.15s;
+            }
+
+            .correction-input:focus {
+                border-color: var(--accent);
+            }
+
+            .correction-actions {
+                display: flex;
+                gap: 8px;
+                margin-top: 8px;
+                justify-content: flex-end;
+            }
+
+            .correction-skip,
+            .correction-submit {
+                padding: 4px 14px;
+                border-radius: 6px;
+                font-size: 12px;
+                cursor: pointer;
+                border: 1px solid var(--border);
+                background: none;
+                color: var(--text-2);
+                transition:
+                    background 0.15s,
+                    border-color 0.15s;
+            }
+
+            .correction-skip:hover {
+                background: var(--bg-3);
+            }
+
+            .correction-submit {
+                background: var(--accent);
+                border-color: var(--accent);
+                color: #fff;
+            }
+
+            .correction-submit:hover {
+                opacity: 0.88;
+            }
+
             /* Confidence badge */
             .conf-badge {
                 display: inline-flex;
@@ -1203,6 +1315,58 @@
                             Loading...
                         </div>
                     </div>
+
+                    <div class="sidebar-section" style="margin-top: 12px">
+                        Training
+                    </div>
+                    <div id="training-section" style="padding: 4px 16px 8px">
+                        <div
+                            id="corrections-badge"
+                            style="
+                                font-size: 11px;
+                                color: var(--text-3);
+                                margin-bottom: 8px;
+                                line-height: 1.5;
+                            "
+                        >
+                            Loading…
+                        </div>
+                        <button
+                            id="export-training-btn"
+                            class="btn-ghost"
+                            style="
+                                width: 100%;
+                                justify-content: center;
+                                font-size: 11px;
+                                padding: 5px 10px;
+                                display: none;
+                            "
+                        >
+                            📦 Export training data
+                        </button>
+                        <div
+                            id="export-status"
+                            style="
+                                font-size: 10px;
+                                color: var(--text-3);
+                                margin-top: 5px;
+                                display: none;
+                                font-family: var(--font-mono);
+                            "
+                        ></div>
+                        <div
+                            id="tuned-model-badge"
+                            style="
+                                display: none;
+                                font-size: 10px;
+                                color: #4ade80;
+                                margin-top: 6px;
+                                font-family: var(--font-mono);
+                            "
+                        >
+                            ⚡ rain-tuned active
+                        </div>
+                    </div>
                 </div>
 
                 <div class="sidebar-footer">
@@ -1471,7 +1635,92 @@
                 await checkHealth();
                 await loadAgents();
                 await loadSessions();
+                await loadFeedbackStats();
             }
+
+            async function loadFeedbackStats() {
+                const badge = document.getElementById("corrections-badge");
+                const exportBtn = document.getElementById(
+                    "export-training-btn",
+                );
+                const tunedBadge = document.getElementById("tuned-model-badge");
+                if (!badge) return;
+                try {
+                    const res = await fetch("/api/feedback/stats");
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const { good, bad, corrections, ready } = data;
+
+                    if (corrections === 0 && good === 0) {
+                        badge.textContent =
+                            "No feedback yet — use 👍👎 to train Rain";
+                    } else {
+                        badge.innerHTML =
+                            `👍 ${good} good &nbsp;·&nbsp; 👎 ${bad} bad<br>` +
+                            `✏️ ${corrections} correction${corrections !== 1 ? "s" : ""}` +
+                            (ready
+                                ? ` <span style="color:#4ade80">— ready to train</span>`
+                                : ` <span style="color:var(--text-3)">(need ${10 - corrections} more)</span>`);
+                    }
+
+                    if (corrections > 0) {
+                        exportBtn.style.display = "block";
+                    }
+
+                    // Check if rain-tuned model is active via agents list
+                    try {
+                        const ar = await fetch("/api/agents");
+                        const ad = await ar.json();
+                        const models = (ad.agents || []).map(
+                            (a) => a.model || "",
+                        );
+                        if (models.some((m) => m.includes("rain-tuned"))) {
+                            tunedBadge.style.display = "block";
+                        }
+                    } catch {}
+                } catch {
+                    badge.textContent = "—";
+                }
+            }
+
+            document
+                .getElementById("export-training-btn")
+                ?.addEventListener("click", async () => {
+                    const btn = document.getElementById("export-training-btn");
+                    const statusEl = document.getElementById("export-status");
+                    btn.disabled = true;
+                    btn.textContent = "⏳ Exporting…";
+                    statusEl.style.display = "none";
+                    try {
+                        const res = await fetch("/api/finetune/export", {
+                            method: "POST",
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                            btn.textContent = "✅ Exported";
+                            statusEl.style.display = "block";
+                            statusEl.style.color = "#4ade80";
+                            statusEl.innerHTML =
+                                `${data.corrections} examples<br>` +
+                                `<span title="${data.jsonl_path}">corrections.jsonl ↗</span><br>` +
+                                `<span title="${data.chatml_path}">corrections.chatml.txt ↗</span><br>` +
+                                `<span style="color:var(--text-3)">Run: python3 finetune.py --full</span>`;
+                        } else {
+                            btn.textContent = "📦 Export training data";
+                            btn.disabled = false;
+                            statusEl.style.display = "block";
+                            statusEl.style.color = "#f87171";
+                            statusEl.textContent =
+                                data.detail || "Export failed";
+                        }
+                    } catch (e) {
+                        btn.textContent = "📦 Export training data";
+                        btn.disabled = false;
+                        statusEl.style.display = "block";
+                        statusEl.style.color = "#f87171";
+                        statusEl.textContent = e.message;
+                    }
+                });
 
             async function checkHealth() {
                 try {
@@ -1776,6 +2025,7 @@
                 const text = chatInput.value.trim();
                 if (!text) return;
 
+                state.currentQuery = text;
                 appendUserMessage(text);
                 chatInput.value = "";
                 autoResize();
@@ -1950,8 +2200,102 @@
       ${sandboxBadge}${searchBadge}
     </div>
   `;
+
+                // ── Feedback UI (Phase 5B) ─────────────────────────────────────
+                const capturedQuery = state.currentQuery || "";
+
+                const feedbackDiv = document.createElement("div");
+                feedbackDiv.className = "msg-feedback";
+                feedbackDiv.innerHTML = `
+                    <button class="feedback-btn good" title="Good response">👍</button>
+                    <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>
+                `;
+
+                const correctionDiv = document.createElement("div");
+                correctionDiv.className = "feedback-correction";
+                correctionDiv.style.display = "none";
+                correctionDiv.innerHTML = `
+                    <div class="correction-label">What should it have said? (optional — helps Rain improve)</div>
+                    <textarea class="correction-input" placeholder="The better answer would be..."></textarea>
+                    <div class="correction-actions">
+                        <button class="correction-skip">Skip</button>
+                        <button class="correction-submit">Save correction</button>
+                    </div>
+                `;
+
+                const msgEl = wrapper.querySelector(".msg");
+                msgEl.appendChild(feedbackDiv);
+                msgEl.appendChild(correctionDiv);
+
+                feedbackDiv
+                    .querySelector(".feedback-btn.good")
+                    .addEventListener("click", async () => {
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "good",
+                            null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">✅ Glad it helped</span>`;
+                    });
+
+                feedbackDiv
+                    .querySelector(".feedback-btn.bad")
+                    .addEventListener("click", () => {
+                        correctionDiv.style.display = "block";
+                        correctionDiv
+                            .querySelector(".correction-input")
+                            .focus();
+                    });
+
+                correctionDiv
+                    .querySelector(".correction-skip")
+                    .addEventListener("click", async () => {
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "bad",
+                            null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">📝 Noted</span>`;
+                        correctionDiv.style.display = "none";
+                    });
+
+                correctionDiv
+                    .querySelector(".correction-submit")
+                    .addEventListener("click", async () => {
+                        const correction = correctionDiv
+                            .querySelector(".correction-input")
+                            .value.trim();
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "bad",
+                            correction || null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">📝 Correction saved — Rain will learn from this</span>`;
+                        correctionDiv.style.display = "none";
+                    });
+
                 messagesEl.appendChild(wrapper);
                 scrollToBottom();
+            }
+
+            async function submitFeedback(query, response, rating, correction) {
+                try {
+                    await fetch("/api/feedback", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            query,
+                            response,
+                            rating,
+                            correction,
+                        }),
+                    });
+                } catch (e) {
+                    console.error("Feedback submit error:", e);
+                }
             }
 
             function appendSystemMessage(text) {
@@ -2021,9 +2365,19 @@
                         return `<pre><div class="code-header">
       <span class="code-lang">${escHtml(l)}</span>
       <button class="code-copy" onclick="copyCode(this)">copy</button>
-    </div><code class="lang-${escHtml(l)}">${highlighted}</code></pre>`;
+    </div><code class="lang-${escHtml(l)}" data-code="${escHtml(code.trimEnd())}">${highlighted}</code></pre>`;
                     },
                 );
+
+                // Protect code blocks from ALL further markdown processing —
+                // headers, lists, and paragraph transforms would otherwise corrupt
+                // data-code attribute content (e.g. "# comment" → <h1>)
+                const codeBlocks = [];
+                html = html.replace(/<pre>[\s\S]*?<\/pre>/g, (match) => {
+                    const placeholder = `\x00PRE_${codeBlocks.length}\x00`;
+                    codeBlocks.push(match);
+                    return placeholder;
+                });
 
                 // Inline code
                 html = html.replace(
@@ -2069,12 +2423,23 @@
                     })
                     .join("\n");
 
+                // Restore code blocks
+                codeBlocks.forEach((cb, i) => {
+                    html = html.replace(`\x00PRE_${i}\x00`, cb);
+                });
+
                 return html;
             }
 
-            // ── Minimal syntax highlighter ─────────────────────────────────────────
+            // ── Syntax highlighter ─────────────────────────────────────────────────
+            // Full tokenizer approach: every token (strings, comments, keywords,
+            // builtins, numbers) is immediately replaced with a null-byte placeholder
+            // and its final <span> HTML is pushed into an array.  The remaining plain
+            // text is escaped with escHtml.  At the very end all placeholders are
+            // restored in one pass.  This means no regex ever runs on HTML that a
+            // previous regex produced — eliminating the "class keyword corrupts span
+            // attribute" and similar cross-contamination bugs.
             function highlightCode(code, lang) {
-                const esc = escHtml(code);
                 if (
                     ![
                         "python",
@@ -2085,34 +2450,65 @@
                         "sh",
                     ].includes(lang)
                 )
-                    return esc;
+                    return escHtml(code);
 
-                let h = esc;
+                const TOK = "\x00";
+                const spans = [];
+
+                // Stash raw source token — content will be HTML-escaped inside the span.
+                function stash(cls, raw) {
+                    const idx = spans.length;
+                    spans.push(`<span class="${cls}">${escHtml(raw)}</span>`);
+                    return `${TOK}s${idx}${TOK}`;
+                }
+
+                // Stash an already-safe (ASCII keyword/number) token — no escaping needed.
+                function stashSafe(cls, word) {
+                    const idx = spans.length;
+                    spans.push(`<span class="${cls}">${word}</span>`);
+                    return `${TOK}s${idx}${TOK}`;
+                }
+
+                let h = code;
 
                 if (lang === "python" || lang === "py") {
-                    // Strings
-                    h = h.replace(
-                        /(&#39;&#39;&#39;[\s\S]*?&#39;&#39;&#39;|&quot;&quot;&quot;[\s\S]*?&quot;&quot;&quot;)/g,
-                        (m) => `<span class="tok-string">${m}</span>`,
+                    // 1. Triple-quoted strings first
+                    h = h.replace(/('''[\s\S]*?'''|"""[\s\S]*?""")/g, (m) =>
+                        stash("tok-string", m),
                     );
+                    // 2. Single-quoted strings
                     h = h.replace(
-                        /(&#39;[^&#39;\n]*&#39;|&quot;[^&quot;\n]*&quot;)/g,
-                        (m) => `<span class="tok-string">${m}</span>`,
+                        /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g,
+                        (m) => stash("tok-string", m),
                     );
-                    // Comments
+                    // 3. Comments (# inside already-stashed strings won't match)
+                    h = h.replace(/(#[^\n]*)/g, (m) => stash("tok-comment", m));
+                    // 4. Decorators
+                    h = h.replace(/(@\w+)/g, (m) => stash("tok-decorator", m));
+
+                    // 5. Escape remaining plain text (placeholders survive — \x00 not touched)
+                    h = escHtml(h);
+
+                    // 6. def funcName — stash both so neither bleeds into later passes
                     h = h.replace(
-                        /(#[^\n]*)/g,
-                        (m) => `<span class="tok-comment">${m}</span>`,
+                        /\bdef\s+(\w+)/g,
+                        (_, name) =>
+                            stashSafe("tok-keyword", "def") +
+                            " " +
+                            stashSafe("tok-func", name),
                     );
-                    // Decorators
+
+                    // 7. class ClassName
                     h = h.replace(
-                        /(@\w+)/g,
-                        (m) => `<span class="tok-decorator">${m}</span>`,
+                        /\bclass\s+(\w+)/g,
+                        (_, name) =>
+                            stashSafe("tok-keyword", "class") +
+                            " " +
+                            stashSafe("tok-func", name),
                     );
-                    // Keywords
-                    const pyKws = [
-                        "def",
-                        "class",
+
+                    // 8. Remaining keywords (def and class already stashed above)
+                    [
                         "import",
                         "from",
                         "return",
@@ -2142,14 +2538,13 @@
                         "yield",
                         "async",
                         "await",
-                    ];
-                    pyKws.forEach((kw) => {
-                        h = h.replace(
-                            new RegExp(`\\b(${kw})\\b`, "g"),
-                            `<span class="tok-keyword">$1</span>`,
+                    ].forEach((kw) => {
+                        h = h.replace(new RegExp(`\\b(${kw})\\b`, "g"), (m) =>
+                            stashSafe("tok-keyword", m),
                         );
                     });
-                    // Builtins
+
+                    // 9. Builtins
                     [
                         "print",
                         "len",
@@ -2168,36 +2563,34 @@
                         "super",
                         "self",
                     ].forEach((b) => {
-                        h = h.replace(
-                            new RegExp(`\\b(${b})\\b`, "g"),
-                            `<span class="tok-builtin">$1</span>`,
+                        h = h.replace(new RegExp(`\\b(${b})\\b`, "g"), (m) =>
+                            stashSafe("tok-builtin", m),
                         );
                     });
-                    // Numbers
-                    h = h.replace(
-                        /\b(\d+\.?\d*)\b/g,
-                        '<span class="tok-number">$1</span>',
-                    );
-                    // Function defs
-                    h = h.replace(
-                        /\bdef\s+(<span[^>]*>def<\/span>\s+)?(\w+)/g,
-                        (m, sp, name) =>
-                            m.replace(
-                                name,
-                                `<span class="tok-func">${name}</span>`,
-                            ),
-                    );
-                }
 
-                if (lang === "javascript" || lang === "js") {
-                    h = h.replace(
-                        /(`[^`]*`|&#39;[^&#39;\n]*&#39;|&quot;[^&quot;\n]*&quot;)/g,
-                        (m) => `<span class="tok-string">${m}</span>`,
+                    // 10. Numbers
+                    h = h.replace(/\b(\d+\.?\d*)\b/g, (m) =>
+                        stashSafe("tok-number", m),
                     );
+                } else if (lang === "javascript" || lang === "js") {
+                    // 1. Template literals
+                    h = h.replace(/(`[^`]*`)/g, (m) => stash("tok-string", m));
+                    // 2. Quoted strings
                     h = h.replace(
-                        /(\/\/[^\n]*)/g,
-                        (m) => `<span class="tok-comment">${m}</span>`,
+                        /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g,
+                        (m) => stash("tok-string", m),
                     );
+                    // 3. Block comments before line comments
+                    h = h.replace(/(\/\*[\s\S]*?\*\/)/g, (m) =>
+                        stash("tok-comment", m),
+                    );
+                    // 4. Line comments
+                    h = h.replace(/(\/\/[^\n]*)/g, (m) =>
+                        stash("tok-comment", m),
+                    );
+
+                    h = escHtml(h);
+
                     [
                         "const",
                         "let",
@@ -2226,26 +2619,30 @@
                         "null",
                         "undefined",
                     ].forEach((kw) => {
-                        h = h.replace(
-                            new RegExp(`\\b(${kw})\\b`, "g"),
-                            `<span class="tok-keyword">$1</span>`,
+                        h = h.replace(new RegExp(`\\b(${kw})\\b`, "g"), (m) =>
+                            stashSafe("tok-keyword", m),
                         );
                     });
-                    h = h.replace(
-                        /\b(\d+\.?\d*)\b/g,
-                        '<span class="tok-number">$1</span>',
-                    );
-                }
 
-                if (lang === "bash" || lang === "sh") {
-                    h = h.replace(
-                        /(#[^\n]*)/g,
-                        (m) => `<span class="tok-comment">${m}</span>`,
+                    h = h.replace(/\b(\d+\.?\d*)\b/g, (m) =>
+                        stashSafe("tok-number", m),
                     );
+                } else if (lang === "bash" || lang === "sh") {
+                    // 1. Quoted strings
+                    h = h.replace(
+                        /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g,
+                        (m) => stash("tok-string", m),
+                    );
+                    // 2. Comments
+                    h = h.replace(/(#[^\n]*)/g, (m) => stash("tok-comment", m));
+
+                    h = escHtml(h);
+
                     [
                         "if",
                         "then",
                         "else",
+                        "elif",
                         "fi",
                         "for",
                         "do",
@@ -2261,12 +2658,16 @@
                         "cp",
                         "mv",
                     ].forEach((kw) => {
-                        h = h.replace(
-                            new RegExp(`\\b(${kw})\\b`, "g"),
-                            `<span class="tok-keyword">$1</span>`,
+                        h = h.replace(new RegExp(`\\b(${kw})\\b`, "g"), (m) =>
+                            stashSafe("tok-keyword", m),
                         );
                     });
                 }
+
+                // Restore every stashed span in one final pass
+                spans.forEach((span, i) => {
+                    h = h.replace(`${TOK}s${i}${TOK}`, span);
+                });
 
                 return h;
             }
@@ -2292,9 +2693,9 @@
             }
 
             async function copyCode(btn) {
-                const code = btn
-                    .closest("pre")
-                    .querySelector("code").textContent;
+                // Read the original plain code stored at render time — no HTML parsing needed
+                const code = btn.closest("pre").querySelector("code")
+                    .dataset.code;
                 try {
                     await navigator.clipboard.writeText(code);
                     btn.textContent = "copied!";

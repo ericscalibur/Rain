@@ -92,6 +92,13 @@ class CustomAgentRequest(BaseModel):
     prompt: str
 
 
+class FeedbackRequest(BaseModel):
+    query: str
+    response: str
+    rating: str  # 'good' or 'bad'
+    correction: Optional[str] = None
+
+
 def _duckduckgo_search(query: str, max_results: int = 5) -> list:
     """
     Search DuckDuckGo using their free HTML endpoint. No API key required.
@@ -339,6 +346,118 @@ async def new_session():
     return {"status": "ok", "session_id": _memory.session_id}
 
 
+@app.get("/api/feedback/stats")
+async def feedback_stats():
+    """Return feedback counts and training readiness."""
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(_memory.db_path) as conn:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='feedback'"
+        ).fetchone()
+        if not exists:
+            return {"total": 0, "good": 0, "bad": 0, "corrections": 0, "ready": False}
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END), 0) AS good,
+                COALESCE(SUM(CASE WHEN rating='bad'  THEN 1 ELSE 0 END), 0) AS bad,
+                COALESCE(SUM(CASE WHEN rating='bad' AND correction IS NOT NULL
+                              AND correction != '' THEN 1 ELSE 0 END), 0) AS corrections
+            FROM feedback
+        """).fetchone()
+        corrections = row[3] if row else 0
+        return {
+            "total":       row[0] if row else 0,
+            "good":        row[1] if row else 0,
+            "bad":         row[2] if row else 0,
+            "corrections": corrections,
+            "ready":       corrections >= 10,
+        }
+
+
+@app.post("/api/finetune/export")
+async def finetune_export():
+    """
+    Export the corrections table to JSONL and ChatML training files.
+    Returns paths and counts. Non-blocking — runs synchronously (fast).
+    """
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+
+    import sqlite3 as _sqlite3
+    import json as _json
+
+    with _sqlite3.connect(_memory.db_path) as conn:
+        rows = conn.execute("""
+            SELECT query, response, correction FROM feedback
+            WHERE rating = 'bad' AND correction IS NOT NULL AND correction != ''
+            ORDER BY id ASC
+        """).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No corrections to export.")
+
+    training_dir = Path.home() / ".rain" / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+
+    SYSTEM = (
+        "You are Rain, a sovereign AI assistant running locally on the user's computer. "
+        "You are direct, precise, and honest about uncertainty. "
+        "You never use third-party Python packages when stdlib alternatives exist. "
+        "For Bitcoin and blockchain data you use the mempool.space public REST API. "
+        "You never output HTML tags or markup inside code blocks."
+    )
+
+    # Alpaca JSONL
+    jsonl_path = training_dir / "corrections.jsonl"
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for query, response, correction in rows:
+            f.write(_json.dumps({
+                "instruction": query.strip(),
+                "input": "",
+                "output": correction.strip(),
+                "system": SYSTEM,
+            }, ensure_ascii=False) + "\n")
+
+    # ChatML for llama.cpp
+    chatml_path = training_dir / "corrections.chatml.txt"
+    with open(chatml_path, "w", encoding="utf-8") as f:
+        for query, response, correction in rows:
+            f.write(f"<|im_start|>system\n{SYSTEM}\n<|im_end|>\n")
+            f.write(f"<|im_start|>user\n{query.strip()}\n<|im_end|>\n")
+            f.write(f"<|im_start|>assistant\n{correction.strip()}\n<|im_end|>\n\n")
+
+    return {
+        "status":      "ok",
+        "corrections": len(rows),
+        "jsonl_path":  str(jsonl_path),
+        "chatml_path": str(chatml_path),
+    }
+
+
+@app.post("/api/feedback")
+async def save_feedback(req: FeedbackRequest):
+    """
+    Save user feedback on a Rain response.
+    rating must be 'good' or 'bad'.
+    correction is optional free-text — what the answer should have been.
+    Corrections are embedded in background and injected into future relevant prompts.
+    """
+    if not _memory:
+        raise HTTPException(status_code=503, detail="Memory not initialized")
+    if req.rating not in ("good", "bad"):
+        raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
+    _memory.save_feedback(
+        query=req.query,
+        response=req.response,
+        rating=req.rating,
+        correction=req.correction,
+    )
+    return {"status": "ok"}
+
+
 @app.post("/api/forget")
 async def forget():
     """Wipe all memory."""
@@ -417,9 +536,9 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             # Monkey-patch _query_agent to emit progress events
             original_query_agent = _orchestrator._query_agent
 
-            def patched_query_agent(agent, prompt, label=None):
+            def patched_query_agent(agent, prompt, label=None, include_memory=True):
                 emit({"type": "progress", "message": f"💭 {label or agent.description + ' thinking...'}"})
-                result = original_query_agent(agent, prompt, label=label)
+                result = original_query_agent(agent, prompt, label=label, include_memory=include_memory)
                 return result
 
             _orchestrator._query_agent = patched_query_agent

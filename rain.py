@@ -74,6 +74,26 @@ class RainMemory:
                     timestamp TEXT NOT NULL,
                     FOREIGN KEY (message_id) REFERENCES messages(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    query TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    rating TEXT NOT NULL,
+                    correction TEXT,
+                    timestamp TEXT NOT NULL,
+                    query_embedding BLOB
+                );
+
+                CREATE TABLE IF NOT EXISTS ab_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    model TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    timestamp TEXT NOT NULL
+                );
             """)
 
     def start_session(self, model: str):
@@ -177,6 +197,86 @@ class RainMemory:
             daemon=True,
         )
         t.start()
+
+    # ── Feedback / Self-Improvement (Phase 5B) ────────────────────────────
+
+    def save_feedback(self, query: str, response: str, rating: str, correction: str = None):
+        """Persist a thumbs-up/down signal (and optional correction) from the user."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO feedback (session_id, query, response, rating, correction, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (self.session_id, query, response, rating, correction, datetime.now().isoformat())
+            )
+            feedback_id = cursor.lastrowid
+
+        # Embed the query in background so we can do semantic retrieval later
+        t = threading.Thread(
+            target=self._store_feedback_embedding,
+            args=(feedback_id, query),
+            daemon=True,
+        )
+        t.start()
+
+    def _store_feedback_embedding(self, feedback_id: int, query: str):
+        """Embed a feedback query and persist the vector for future retrieval."""
+        vec = self._embed(query)
+        if vec is None:
+            return
+        blob = json.dumps(vec).encode("utf-8")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE feedback SET query_embedding = ? WHERE id = ?",
+                    (blob, feedback_id)
+                )
+        except Exception:
+            pass
+
+    def get_relevant_corrections(self, query: str, limit: int = 3) -> List[dict]:
+        """
+        Find past corrections that are semantically relevant to the current query.
+        Only returns 'bad'-rated feedback that has a user-supplied correction.
+        Uses cosine similarity on embedded queries; falls back to recency if
+        embeddings are unavailable.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """SELECT id, query, response, correction, query_embedding
+                   FROM feedback
+                   WHERE rating = 'bad' AND correction IS NOT NULL AND correction != ''
+                   ORDER BY id DESC LIMIT 50"""
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        query_vec = self._embed(query)
+        if query_vec is None:
+            # No embedding available — return most recent corrections
+            return [
+                {"query": r[1], "response": r[2], "correction": r[3]}
+                for r in rows[:limit]
+            ]
+
+        scored = []
+        for row in rows:
+            _, fb_query, fb_response, fb_correction, emb_blob = row
+            if emb_blob:
+                try:
+                    fb_vec = json.loads(emb_blob.decode("utf-8"))
+                    sim = self._cosine_similarity(query_vec, fb_vec)
+                    scored.append((sim, fb_query, fb_response, fb_correction))
+                except Exception:
+                    pass
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # Only inject corrections with meaningful similarity (>0.5)
+        return [
+            {"query": q, "response": r, "correction": c, "similarity": round(s, 2)}
+            for s, q, r, c in scored[:limit]
+            if s > 0.5
+        ]
 
     # ── Semantic Memory (Phase 5A) ─────────────────────────────────────────
 
@@ -603,7 +703,8 @@ Rules:
 - For network tasks involving Bitcoin or blockchain data, use urllib.request to query public REST APIs (mempool.space, blockstream.info, blockchain.info). Example: urllib.request.urlopen("https://mempool.space/api/address/{addr}/txs"). Never assume a local Bitcoin node or bitcoin-cli is available unless the user explicitly says so.
 - MEMPOOL.SPACE API FORMAT: The endpoint https://mempool.space/api/address/{addr}/txs returns a JSON ARRAY directly — NOT an object with a "txs" key. Correct usage: `data = json.loads(response.read()); for tx in data:` — NOT `data["txs"]`.
 - Any `while True` polling loop MUST include `import time` and `time.sleep(N)` at the end of the loop body. Never write an infinite loop without a sleep — it will peg the CPU and make the script unusable.
-- Be direct. No filler. Show the code.""",
+- Be direct. No filler. Show the code.
+- NEVER output HTML tags, CSS class names, span elements, or any markup inside code blocks. Code fences contain only clean, plain source code. No <span>, no class=, no &quot;, no &amp;, no HTML entities of any kind inside code blocks.""",
 
     AgentType.LOGIC: """You are Rain's Logic Agent — a sovereign AI running locally, specializing in reasoning and planning.
 
@@ -653,6 +754,7 @@ Rules:
 - Structure your critique: list specific issues, don't write paragraphs of vague feedback
 - Do NOT rewrite the answer. Only critique it.
 - ALWAYS check imports: if code uses a module that does not ship with Python's stdlib (e.g. requests, bitcoin, pandas, numpy), flag it as a HALLUCINATED DEPENDENCY — this is an automatic NEEDS_IMPROVEMENT or POOR rating.
+- TOPIC DRIFT: If the response wanders into subjects not asked about in the original query, flag it as NEEDS_IMPROVEMENT. A focused answer about one thing is better than a sprawling answer about many things. Check: does every paragraph directly address the question? If not, name the drift.
 - Rate overall quality: EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR""",
 
     AgentType.SYNTHESIZER: """You are Rain's Synthesizer — a sovereign AI running locally, responsible for producing final answers.
@@ -670,14 +772,19 @@ Your job:
 - NEVER start your response with "Here is a revised..." or "Here is a final answer..." or any similar preamble. Start directly with the answer.
 - NEVER end your response with a bullet list explaining what criticisms you addressed. The user does not see the critique — they only see your answer. Meta-commentary about your own process is forbidden.
 - Your output is the final thing the user reads. Write it as if you wrote it fresh, not as a revision.
+- FORBIDDEN PHRASES — your response must contain none of these. If you catch yourself writing them, delete and rewrite: "considering the limitations", "as mentioned in the critique", "the critique noted", "the critique suggested", "the reflection", "the primary response", "I have addressed", "to address the concerns", "based on the feedback", "upon reflection", "in the critique".
 
 Rules:
 - The final answer should be better than either input alone
+- STAY FOCUSED: Answer exactly what was asked — nothing more. Do not introduce related topics, background context, or tangents that were not requested. One question, one answer. If the question is narrow, the answer is narrow.
+- If the primary response drifted off-topic, cut those parts. Do not carry drift forward.
 - Preserve all correct code, technical details, and examples from the primary response
 - Be concise. Don't pad. Don't repeat yourself.
 - STDLIB FIRST — if the primary response used stdlib (urllib, json, sqlite3, etc.), you MUST preserve that. Never substitute requests, SQLAlchemy, or any third-party package. This is non-negotiable.
 - If the reflection agent suggested using a third-party package as an improvement, ignore that suggestion. Stdlib is the correct choice.
+- BITCOIN API: For any Bitcoin price or blockchain data, use free public REST APIs with urllib.request — mempool.space (https://mempool.space/api/v1/prices for BTC/USD price), blockstream.info, or blockchain.info. NEVER use CoinMarketCap, CoinGecko, or any API that requires a key unless the user explicitly provided one.
 - NEVER include code blocks in a response unless the original query was explicitly asking for code. If the question is conversational or factual, respond in plain prose only.
+- NEVER output HTML tags, CSS class names, span elements, or any markup inside code blocks. Code fences contain only clean, plain source code. No <span>, no class=, no &quot;, no HTML entities inside code blocks.
 - NEVER fabricate facts, invent connections between people, or state things as true that you cannot verify. If you are uncertain, say so explicitly. Honesty about uncertainty is a feature, not a weakness.
 - Do not pad a short answer with invented detail just to seem thorough. A correct two-sentence answer is better than a confident paragraph of hallucinations.
 - Craig Wright is NOT Satoshi Nakamoto. A UK High Court ruled in 2024 that he is not. Do not treat his claims as credible or ongoing debate.""",
@@ -698,13 +805,16 @@ Be direct, practical, and focused on empowering users with knowledge and tools f
 # ── Preferred models per agent (falls back to default if not installed) ─
 
 AGENT_PREFERRED_MODELS = {
-    AgentType.DEV:         ['codellama:7b', 'deepseek-coder:6.7b', 'llama3.1'],
-    AgentType.LOGIC:       ['llama3.1', 'mistral:7b'],
-    AgentType.DOMAIN:      ['llama3.1', 'mistral:7b'],
-    AgentType.REFLECTION:  ['llama3.1', 'mistral:7b'],
-    AgentType.SYNTHESIZER: ['llama3.1', 'mistral:7b'],
-    AgentType.GENERAL:     ['llama3.1', 'mistral:7b'],
+    # Code-focused agents: qwen2.5-coder:7b leads (fast + capable), codestral available but heavy at 13GB
+    AgentType.DEV:         ['qwen2.5-coder:7b', 'codestral', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
+    # General reasoning agents: llama3.2 is newer/stronger than llama3.1
+    AgentType.LOGIC:       ['llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.DOMAIN:      ['llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.REFLECTION:  ['llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.SYNTHESIZER: ['llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.GENERAL:     ['llama3.2', 'llama3.1', 'mistral:7b'],
 }
+
 
 
 class AgentRouter:
@@ -1600,7 +1710,21 @@ class MultiAgentOrchestrator:
             return [self.default_model]
 
     def _best_model_for(self, agent_type: AgentType) -> str:
-        """Pick the best installed model for an agent, falling back to default."""
+        """Pick the best installed model for an agent, falling back to default.
+
+        If 'rain-tuned' is registered in Ollama (created by finetune.py), it is
+        automatically preferred for primary agent types — this is the payoff of
+        Phase 5B.  Reflection and Synthesizer always use the base model so their
+        critiques are unbiased by the fine-tuning.
+        """
+        TUNED_MODEL = "rain-tuned"
+        PRIMARY_TYPES = {AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN, AgentType.GENERAL}
+
+        # Prefer rain-tuned for primary agents if it exists
+        if agent_type in PRIMARY_TYPES:
+            if any(m.startswith(TUNED_MODEL) for m in self._installed_models):
+                return TUNED_MODEL
+
         preferred = AGENT_PREFERRED_MODELS.get(agent_type, [self.default_model])
         for model in preferred:
             # Match by prefix so 'llama3.1' matches 'llama3.1:latest'
@@ -1696,6 +1820,7 @@ class MultiAgentOrchestrator:
         Tier 1: session summaries (long-term episodic).
         Tier 2: last 20 messages (working memory).
         Tier 3: semantic search — relevant past exchanges retrieved by meaning.
+        Tier 4: learned corrections — past responses the user marked wrong, injected as negative examples.
         """
         if not self.memory:
             return ""
@@ -1731,32 +1856,81 @@ class MultiAgentOrchestrator:
                     snippet = hit["content"][:400] + "..." if len(hit["content"]) > 400 else hit["content"]
                     context += f"  [{date} · {round(hit['similarity'] * 100)}% match] {role}: {snippet}\n"
 
+        # ── Tier 4: Learned corrections (Phase 5B) ─────────────────────
+        if query:
+            corrections = self.memory.get_relevant_corrections(query, limit=3)
+            if corrections:
+                context += "\n\nLearned corrections — past answers the user marked wrong. Do not repeat these mistakes:\n"
+                for c in corrections:
+                    context += f"  ❌ Query: \"{c['query'][:120]}\"\n"
+                    context += f"     Rain said: \"{c['response'][:250]}...\"\n"
+                    context += f"  ✅ Correct: \"{c['correction'][:300]}\"\n\n"
+
         return context
 
-    def _query_agent(self, agent: Agent, prompt: str, label: str = None) -> str:
-        """Send a prompt to a specific agent's model and return the response."""
+    # Per-agent temperature — lower = more focused/deterministic, higher = more creative
+    _AGENT_TEMPERATURE: Dict[AgentType, float] = {
+        AgentType.DEV:         0.2,   # precise, deterministic code
+        AgentType.LOGIC:       0.4,   # structured reasoning
+        AgentType.DOMAIN:      0.3,   # factual accuracy
+        AgentType.REFLECTION:  0.3,   # critical analysis
+        AgentType.SYNTHESIZER: 0.3,   # clean, focused output
+        AgentType.GENERAL:     0.5,   # conversational
+    }
+
+    def _query_agent(self, agent: Agent, prompt: str, label: str = None, include_memory: bool = True) -> str:
+        """Send a prompt to a specific agent via the Ollama HTTP API.
+
+        Uses /api/chat with proper system/user message roles, agent-specific
+        temperature, an 8192-token context window, and repeat_penalty to reduce
+        wandering — all things unavailable through the 'ollama run' CLI.
+
+        include_memory controls whether the full memory context (history, summaries,
+        semantic hits, corrections) is injected. The primary agent always gets it.
+        The reflection and synthesis agents must NOT — they should focus solely on
+        the query + primary response, not wander into unrelated history.
+        """
+        import urllib.request as _urllib
+        import json as _json
+
         self._current_process = None
         try:
-            memory_context = self._build_memory_context(query=prompt)
-            full_prompt = (
-                f"{agent.system_prompt}{memory_context}\n\n"
-                f"User: {prompt}\n\nAssistant:"
+            memory_context = self._build_memory_context(query=prompt) if include_memory else ""
+            system_content = agent.system_prompt + memory_context
+
+            temperature = self._AGENT_TEMPERATURE.get(agent.agent_type, 0.4)
+
+            payload = _json.dumps({
+                "model": agent.model_name,
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {"role": "user",   "content": prompt},
+                ],
+                "stream": False,
+                "options": {
+                    "temperature":    temperature,
+                    "num_ctx":        8192,   # up from default 4096 — prevents mid-response amnesia
+                    "repeat_penalty": 1.1,   # discourages looping / repetition
+                    "top_p":          0.9,
+                },
+            }).encode()
+
+            req = _urllib.Request(
+                "http://localhost:11434/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            self._current_process = subprocess.Popen(
-                ['ollama', 'run', agent.model_name, full_prompt],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True
-            )
+
             spinner_label = label or f"{agent.description} thinking..."
             stop_event, thread = self._start_spinner(spinner_label)
             try:
-                stdout, _ = self._current_process.communicate()
+                with _urllib.urlopen(req, timeout=300) as resp:
+                    data = _json.loads(resp.read())
+                    return data["message"]["content"].strip()
             finally:
                 self._stop_spinner(stop_event, thread)
-            if self._current_process.returncode != 0:
-                return ""
-            return stdout.strip()
+
         except Exception as e:
             print(f"Error querying agent {agent.agent_type.value}: {e}")
             return ""
@@ -1881,7 +2055,8 @@ class MultiAgentOrchestrator:
         reflection_prompt = self._build_reflection_prompt(query, primary_response)
         critique = self._query_agent(
             reflection_agent, reflection_prompt,
-            label="Reflection Agent reviewing..."
+            label="Reflection Agent reviewing...",
+            include_memory=False,  # reflection only needs query + primary, not full history
         )
 
         rating = 'GOOD'
@@ -1901,7 +2076,8 @@ class MultiAgentOrchestrator:
                 synth_prompt = self._build_synthesis_prompt(query, primary_response, critique)
                 synthesized = self._query_agent(
                     synth_agent, synth_prompt,
-                    label="Synthesizer working..."
+                    label="Synthesizer working...",
+                    include_memory=False,  # synthesizer only needs query + primary + critique, not full history
                 )
                 if synthesized:
                     final_response = synthesized
@@ -1925,7 +2101,24 @@ class MultiAgentOrchestrator:
             )
             sandbox_verified = any(r.success for r in sandbox_results)
 
-        # ── 7. Build result ───────────────────────────────────────────
+        # ── 7. Log A/B result if rain-tuned is active ────────────────
+        if self.memory and primary_agent.model_name.startswith("rain-tuned"):
+            try:
+                import sqlite3 as _sqlite3
+                with _sqlite3.connect(self.memory.db_path) as _conn:
+                    _conn.execute(
+                        """INSERT INTO ab_results (session_id, model, query, confidence, timestamp)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (self.memory.session_id, primary_agent.model_name,
+                         query[:300], final_confidence, datetime.now().isoformat())
+                    )
+            except Exception:
+                pass
+
+        # ── 8. Post-process: scrub HTML artifacts and meta-commentary ─
+        final_response = self._scrub_code_blocks(final_response)
+
+        # ── 8. Build result ───────────────────────────────────────────
         total_duration = _time.time() - start_time
         result = ReflectionResult(
             content=final_response,
@@ -1948,6 +2141,56 @@ class MultiAgentOrchestrator:
             )
 
         return result
+
+    def _scrub_code_blocks(self, response: str) -> str:
+        """
+        Post-processing safety net: strip any HTML tags/entities that a model
+        accidentally injected into fenced code blocks.  Also removes synthesizer
+        meta-commentary phrases that slip past the prompt instructions.
+        """
+        import html as _html
+
+        # ── 1. Strip HTML from inside ``` fences ──────────────────────
+        def _clean_block(m):
+            fence_open = m.group(1)   # e.g. "```python\n"
+            code       = m.group(2)
+            fence_close = m.group(3)  # "```"
+            # Remove <span ...> and </span> tags
+            code = re.sub(r'</?span[^>]*>', '', code)
+            # Remove any other stray HTML tags
+            code = re.sub(r'<[^>]+>', '', code)
+            # Unescape HTML entities that don't belong in source code
+            code = _html.unescape(code)
+            return fence_open + code + fence_close
+
+        response = re.sub(
+            r'(```\w*\n)([\s\S]*?)(```)',
+            _clean_block,
+            response,
+        )
+
+        # ── 2. Strip synthesizer meta-commentary lines ─────────────────
+        FORBIDDEN = [
+            'considering the limitations',
+            'as mentioned in the critique',
+            'the critique noted',
+            'the critique suggested',
+            'the primary response',
+            'i have addressed',
+            'to address the concerns',
+            'based on the feedback',
+            'upon reflection',
+            'in the critique',
+            'the reflection agent',
+        ]
+        lines = response.split('\n')
+        clean = []
+        for line in lines:
+            ll = line.lower()
+            if any(phrase in ll for phrase in FORBIDDEN):
+                continue
+            clean.append(line)
+        return '\n'.join(clean).strip()
 
     def _response_contains_code(self, response: str) -> bool:
         return bool(re.search(r'```(\w+)?\n', response, re.IGNORECASE))
