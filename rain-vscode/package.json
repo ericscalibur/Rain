@@ -1,0 +1,192 @@
+{
+  "name": "rain-ai",
+  "displayName": "Rain ⛈️",
+  "description": "Sovereign local AI assistant — powered by Rain running on your machine. No cloud, no API keys, no tracking.",
+  "version": "0.1.0",
+  "publisher": "rain-sovereign",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "local",
+    "sovereign",
+    "ollama",
+    "bitcoin",
+    "privacy",
+    "offline"
+  ],
+  "icon": "media/icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rain.askAboutSelection",
+        "title": "Rain: Ask About Selection",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.explainSelection",
+        "title": "Rain: Explain This Code",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.refactorSelection",
+        "title": "Rain: Refactor Selection",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.findBugs",
+        "title": "Rain: Find Bugs in Selection",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.writeTests",
+        "title": "Rain: Write Tests for Selection",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.askAboutFile",
+        "title": "Rain: Ask About This File",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.indexProject",
+        "title": "Rain: Index This Project",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.openChat",
+        "title": "Rain: Open Chat Panel",
+        "category": "Rain"
+      },
+      {
+        "command": "rain.setServerUrl",
+        "title": "Rain: Set Server URL",
+        "category": "Rain"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorHasSelection",
+          "command": "rain.askAboutSelection",
+          "group": "rain@1"
+        },
+        {
+          "when": "editorHasSelection",
+          "command": "rain.explainSelection",
+          "group": "rain@2"
+        },
+        {
+          "when": "editorHasSelection",
+          "command": "rain.refactorSelection",
+          "group": "rain@3"
+        },
+        {
+          "when": "editorHasSelection",
+          "command": "rain.findBugs",
+          "group": "rain@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rain.askAboutSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rain.explainSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rain.refactorSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rain.findBugs",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "rain.writeTests",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rain-sidebar",
+          "title": "Rain ⛈️",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rain-sidebar": [
+        {
+          "type": "webview",
+          "id": "rain.chatView",
+          "name": "Chat",
+          "retainContextWhenHidden": true
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Rain",
+      "properties": {
+        "rain.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:7734",
+          "description": "URL of the Rain server. Default is http://localhost:7734 (local). Change this if Rain is running on a different machine or port."
+        },
+        "rain.webSearch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically augment queries with live DuckDuckGo search results."
+        },
+        "rain.sandbox": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Rain's code execution sandbox — Rain will run and verify code before returning it."
+        },
+        "rain.autoIndexOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically index the current workspace when a project is opened (requires nomic-embed-text to be installed in Ollama)."
+        },
+        "rain.inlineDecorationsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline Rain action buttons above functions and classes in the editor gutter."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "rain.askAboutSelection",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "rain.openChat",
+        "key": "ctrl+shift+alt+r",
+        "mac": "cmd+shift+alt+r"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.22.0"
+  }
+}

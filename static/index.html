@@ -1183,6 +1183,92 @@
                 margin: 0 12px 8px;
             }
 
+            /* Image badge — shows thumbnail preview */
+            .image-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: rgba(139, 92, 246, 0.1);
+                border: 1px solid rgba(139, 92, 246, 0.5);
+                border-radius: 8px;
+                padding: 4px 10px 4px 4px;
+                margin: 0 12px 8px;
+                max-width: calc(100% - 24px);
+            }
+
+            .image-badge-thumb {
+                width: 36px;
+                height: 36px;
+                object-fit: cover;
+                border-radius: 5px;
+                flex-shrink: 0;
+                display: block;
+            }
+
+            .image-badge-info {
+                display: flex;
+                flex-direction: column;
+                gap: 1px;
+                min-width: 0;
+            }
+
+            .image-badge-name {
+                font-size: 11px;
+                color: rgba(139, 92, 246, 0.9);
+                font-family: var(--font-mono);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 200px;
+            }
+
+            .image-badge-label {
+                font-size: 10px;
+                color: var(--text-3);
+            }
+
+            .image-badge-remove {
+                background: none;
+                border: none;
+                color: rgba(139, 92, 246, 0.6);
+                cursor: pointer;
+                padding: 0 0 0 4px;
+                font-size: 13px;
+                line-height: 1;
+                flex-shrink: 0;
+            }
+
+            .image-badge-remove:hover {
+                color: rgba(139, 92, 246, 1);
+            }
+
+            /* Vision badge on Rain responses */
+            .vision-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                background: rgba(139, 92, 246, 0.08);
+                border: 1px solid rgba(139, 92, 246, 0.3);
+                border-radius: 4px;
+                padding: 1px 6px;
+                font-size: 10px;
+                color: rgba(139, 92, 246, 0.8);
+                font-family: var(--font-mono);
+                margin-left: 6px;
+                vertical-align: middle;
+            }
+
+            /* Inline image in user message */
+            .msg-image-preview {
+                display: block;
+                max-width: 320px;
+                max-height: 240px;
+                border-radius: 8px;
+                margin-top: 8px;
+                border: 1px solid var(--border);
+                object-fit: contain;
+            }
+
             .file-badge-remove {
                 background: none;
                 border: none;
@@ -1242,6 +1328,151 @@
 
             #window-drop-overlay .drop-icon {
                 font-size: 56px;
+            }
+
+            #window-drop-overlay .drop-sub {
+                font-size: 13px;
+                font-weight: 400;
+                color: var(--text-2);
+            }
+
+            /* ── Phase 7C: Freshness badges ───────────────────────── */
+            .freshness-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 10px;
+                padding: 1px 7px;
+                border-radius: 4px;
+                font-family: var(--font-mono);
+                margin-left: 6px;
+                vertical-align: middle;
+            }
+            .freshness-badge.live {
+                background: rgba(61, 220, 132, 0.08);
+                border: 1px solid rgba(61, 220, 132, 0.3);
+                color: var(--green);
+            }
+            .freshness-badge.search {
+                background: rgba(74, 158, 255, 0.08);
+                border: 1px solid rgba(74, 158, 255, 0.3);
+                color: var(--accent);
+            }
+            .freshness-badge.indexed {
+                background: rgba(255, 215, 0, 0.08);
+                border: 1px solid rgba(255, 215, 0, 0.3);
+                color: var(--yellow);
+            }
+            .freshness-badge.training {
+                background: rgba(102, 102, 102, 0.08);
+                border: 1px solid rgba(102, 102, 102, 0.3);
+                color: var(--text-3);
+            }
+            .freshness-badge.graph {
+                background: rgba(179, 136, 255, 0.08);
+                border: 1px solid rgba(179, 136, 255, 0.3);
+                color: var(--purple);
+            }
+
+            /* ── Phase 7C: Project index panel ────────────────────── */
+            .project-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 16px;
+                font-size: 12px;
+                color: var(--text-2);
+                border-bottom: 1px solid var(--border);
+                gap: 6px;
+            }
+            .project-item:last-child {
+                border-bottom: none;
+            }
+            .project-info {
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+            }
+            .project-name {
+                font-size: 12px;
+                color: var(--text);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                font-weight: 500;
+            }
+            .project-stats {
+                font-size: 10px;
+                color: var(--text-3);
+                font-family: var(--font-mono);
+                margin-top: 2px;
+            }
+            .project-actions {
+                display: flex;
+                gap: 4px;
+                flex-shrink: 0;
+            }
+            .project-action-btn {
+                background: none;
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                color: var(--text-3);
+                cursor: pointer;
+                padding: 2px 6px;
+                font-size: 11px;
+                transition:
+                    color 0.15s,
+                    border-color 0.15s;
+            }
+            .project-action-btn:hover {
+                color: var(--accent);
+                border-color: var(--accent);
+            }
+            .project-action-btn.danger:hover {
+                color: var(--red);
+                border-color: var(--red);
+            }
+
+            /* Index project modal */
+            #index-modal-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.55);
+                z-index: 900;
+                align-items: center;
+                justify-content: center;
+            }
+            #index-modal-overlay.visible {
+                display: flex;
+            }
+            #index-modal {
+                background: var(--bg-2);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 24px;
+                width: 420px;
+                max-width: 90vw;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            }
+            #index-modal .modal-title {
+                font-size: 16px;
+                font-weight: 600;
+                margin-bottom: 4px;
+            }
+            #index-modal .modal-subtitle {
+                font-size: 12px;
+                color: var(--text-3);
+                margin-bottom: 16px;
+                line-height: 1.5;
+            }
+            #index-status {
+                font-size: 11px;
+                color: var(--text-3);
+                font-family: var(--font-mono);
+                margin-top: 10px;
+                display: none;
+                line-height: 1.5;
             }
 
             /* ── Scrollbar global ─────────────────────────────────── */
@@ -1313,6 +1544,42 @@
                             "
                         >
                             Loading...
+                        </div>
+                    </div>
+
+                    <div class="sidebar-section-row" style="margin-top: 12px">
+                        <div class="sidebar-section">Projects</div>
+                        <button
+                            class="add-agent-btn"
+                            id="index-project-btn"
+                            title="Index a project directory"
+                        >
+                            <svg
+                                viewBox="0 0 16 16"
+                                width="16"
+                                height="16"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <circle cx="8" cy="8" r="6.5" />
+                                <line x1="8" y1="5" x2="8" y2="11" />
+                                <line x1="5" y1="8" x2="11" y2="8" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="project-list">
+                        <div
+                            class="agent-item"
+                            style="
+                                color: var(--text-3);
+                                font-size: 11px;
+                                padding: 6px 16px;
+                            "
+                        >
+                            No projects indexed
                         </div>
                     </div>
 
@@ -1510,7 +1777,7 @@
                             </button>
                             <span class="input-hint"
                                 >Enter to send · Shift+Enter for newline · or
-                                drag a file</span
+                                drag a file or image</span
                             >
                             <button id="send-btn" title="Send">
                                 <!-- Send icon -->
@@ -1591,10 +1858,59 @@
             </div>
         </div>
 
+        <!-- Phase 7C: Index project modal -->
+        <div id="index-modal-overlay">
+            <div id="index-modal">
+                <div class="modal-title">📂 Index Project</div>
+                <div class="modal-subtitle">
+                    Enter the full path to a project directory. Rain will
+                    semantically index every text file so it can answer
+                    questions about your codebase.
+                </div>
+                <div class="modal-field">
+                    <label class="modal-label" for="index-path-input"
+                        >Project Path</label
+                    >
+                    <input
+                        class="modal-input"
+                        id="index-path-input"
+                        type="text"
+                        placeholder="/Users/you/projects/my-app"
+                        autocomplete="off"
+                    />
+                </div>
+                <div class="modal-field">
+                    <label
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-size: 12px;
+                            color: var(--text-3);
+                            cursor: pointer;
+                        "
+                    >
+                        <input type="checkbox" id="index-force-checkbox" />
+                        Force re-index (overwrite existing chunks)
+                    </label>
+                </div>
+                <div id="index-status"></div>
+                <div class="modal-footer">
+                    <button class="modal-btn" id="index-modal-cancel">
+                        Cancel
+                    </button>
+                    <button class="modal-btn primary" id="index-modal-save">
+                        Index Project
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Full-window drag overlay -->
         <div id="window-drop-overlay">
             <div class="drop-icon">⛈️</div>
-            <div>Drop file to analyze</div>
+            <div>Drop to attach</div>
+            <div class="drop-sub">code files · images · text</div>
         </div>
 
         <script>
@@ -1630,12 +1946,29 @@
                 document.getElementById("agent-modal-cancel");
             const agentModalSave = document.getElementById("agent-modal-save");
 
+            // Phase 7C: project index panel refs
+            const projectList = document.getElementById("project-list");
+            const indexProjectBtn =
+                document.getElementById("index-project-btn");
+            const indexModalOverlay = document.getElementById(
+                "index-modal-overlay",
+            );
+            const indexPathInput = document.getElementById("index-path-input");
+            const indexForceCheckbox = document.getElementById(
+                "index-force-checkbox",
+            );
+            const indexModalCancel =
+                document.getElementById("index-modal-cancel");
+            const indexModalSave = document.getElementById("index-modal-save");
+            const indexStatus = document.getElementById("index-status");
+
             // ── Init ───────────────────────────────────────────────────────────────
             async function init() {
                 await checkHealth();
                 await loadAgents();
                 await loadSessions();
                 await loadFeedbackStats();
+                await loadProjects();
             }
 
             async function loadFeedbackStats() {
@@ -1721,6 +2054,149 @@
                         statusEl.textContent = e.message;
                     }
                 });
+
+            // ── Phase 7C: Project index panel ──────────────────────────────────
+            async function loadProjects() {
+                try {
+                    const res = await fetch("/api/indexed-projects");
+                    const data = await res.json();
+                    if (!data.indexer_available) {
+                        projectList.innerHTML = `<div class="agent-item" style="color:var(--text-3);font-size:11px;padding:6px 16px">Indexer not available</div>`;
+                        return;
+                    }
+                    const projects = data.projects || [];
+                    if (projects.length === 0) {
+                        projectList.innerHTML = `<div class="agent-item" style="color:var(--text-3);font-size:11px;padding:6px 16px">No projects indexed</div>`;
+                        return;
+                    }
+                    projectList.innerHTML = "";
+                    for (const p of projects) {
+                        const name =
+                            p.project_path.split("/").filter(Boolean).pop() ||
+                            p.project_path;
+                        const lastIdx = p.last_indexed
+                            ? p.last_indexed.slice(0, 16).replace("T", " ")
+                            : "—";
+                        const div = document.createElement("div");
+                        div.className = "project-item";
+                        div.innerHTML = `
+                            <div class="project-info" title="${escHtml(p.project_path)}">
+                                <div class="project-name">📂 ${escHtml(name)}</div>
+                                <div class="project-stats">${p.file_count} files · ${p.chunk_count} chunks · ${lastIdx}</div>
+                            </div>
+                            <div class="project-actions">
+                                <button class="project-action-btn" title="Re-index project" data-action="reindex" data-path="${escHtml(p.project_path)}">⟳</button>
+                                <button class="project-action-btn danger" title="Remove from index" data-action="remove" data-path="${escHtml(p.project_path)}">×</button>
+                            </div>
+                        `;
+                        div.querySelector(
+                            '[data-action="reindex"]',
+                        ).addEventListener("click", async (e) => {
+                            const path = e.currentTarget.dataset.path;
+                            e.currentTarget.textContent = "…";
+                            e.currentTarget.disabled = true;
+                            await indexProjectPath(path, true);
+                            await loadProjects();
+                        });
+                        div.querySelector(
+                            '[data-action="remove"]',
+                        ).addEventListener("click", async (e) => {
+                            const path = e.currentTarget.dataset.path;
+                            const projName = path
+                                .split("/")
+                                .filter(Boolean)
+                                .pop();
+                            if (
+                                !confirm(
+                                    `Remove "${projName}" from the index?\n\nThis only deletes the index — your files are untouched.`,
+                                )
+                            )
+                                return;
+                            try {
+                                await fetch(
+                                    `/api/indexed-projects?project_path=${encodeURIComponent(path)}`,
+                                    { method: "DELETE" },
+                                );
+                            } catch (err) {
+                                console.error(err);
+                            }
+                            await loadProjects();
+                        });
+                        projectList.appendChild(div);
+                    }
+                } catch (err) {
+                    projectList.innerHTML = `<div class="agent-item" style="color:var(--text-3);font-size:11px;padding:6px 16px">Error loading projects</div>`;
+                }
+            }
+
+            async function indexProjectPath(path, force = false) {
+                indexStatus.style.display = "block";
+                indexStatus.style.color = "var(--text-3)";
+                indexStatus.textContent =
+                    "⏳ Indexing — this may take a minute…";
+                try {
+                    const res = await fetch("/api/index-project", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ project_path: path, force }),
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        indexStatus.style.color = "#4ade80";
+                        indexStatus.innerHTML =
+                            `✅ Indexed <b>${data.files_indexed}</b> files, <b>${data.chunks_total}</b> chunks` +
+                            (data.files_skipped
+                                ? ` (${data.files_skipped} skipped)`
+                                : "") +
+                            (data.errors ? ` · ${data.errors} error(s)` : "") +
+                            ` in ${data.duration_s}s`;
+                    } else {
+                        indexStatus.style.color = "#f87171";
+                        indexStatus.textContent =
+                            data.detail || "Indexing failed";
+                    }
+                } catch (e) {
+                    indexStatus.style.color = "#f87171";
+                    indexStatus.textContent = e.message;
+                }
+            }
+
+            function openIndexModal() {
+                indexPathInput.value = "";
+                indexForceCheckbox.checked = false;
+                indexStatus.style.display = "none";
+                indexStatus.textContent = "";
+                indexModalOverlay.classList.add("visible");
+                indexPathInput.focus();
+            }
+
+            function closeIndexModal() {
+                indexModalOverlay.classList.remove("visible");
+            }
+
+            async function handleIndexProject() {
+                const path = indexPathInput.value.trim();
+                if (!path) return;
+                indexModalSave.disabled = true;
+                indexModalSave.textContent = "⏳ Indexing…";
+                await indexProjectPath(path, indexForceCheckbox.checked);
+                indexModalSave.disabled = false;
+                indexModalSave.textContent = "Index Project";
+                await loadProjects();
+            }
+
+            indexProjectBtn.addEventListener("click", openIndexModal);
+            indexModalCancel.addEventListener("click", closeIndexModal);
+            indexModalOverlay.addEventListener("click", (e) => {
+                if (e.target === indexModalOverlay) closeIndexModal();
+            });
+            indexModalSave.addEventListener("click", handleIndexProject);
+            indexPathInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleIndexProject();
+                }
+            });
 
             async function checkHealth() {
                 try {
@@ -2189,11 +2665,39 @@
                     ? `<div class="search-badge">🌐 web search · ${meta.search_results} result${meta.search_results !== 1 ? "s" : ""} retrieved</div>`
                     : "";
 
+                const visionBadge = meta.vision_used
+                    ? `<span class="vision-badge">👁️ vision</span>`
+                    : "";
+
+                // Phase 7C: freshness badges based on data_sources
+                let freshnessBadges = "";
+                const sources = meta.data_sources || [];
+                if (sources.includes("live_api")) {
+                    freshnessBadges += `<span class="freshness-badge live">⚡ live</span>`;
+                }
+                if (sources.includes("web_search")) {
+                    freshnessBadges += `<span class="freshness-badge search">🌐 web</span>`;
+                }
+                if (sources.includes("project_index")) {
+                    freshnessBadges += `<span class="freshness-badge indexed">📂 indexed</span>`;
+                }
+                if (sources.includes("vision")) {
+                    // already covered by visionBadge — skip duplicate
+                }
+                if (sources.includes("knowledge_graph")) {
+                    freshnessBadges += `<span class="freshness-badge graph">🧠 graph</span>`;
+                }
+                if (sources.length === 1 && sources[0] === "training_data") {
+                    freshnessBadges += `<span class="freshness-badge training">💾 training data</span>`;
+                }
+
                 wrapper.innerHTML = `
     <div class="msg">
       <div class="msg-header">
         <span class="msg-role rain">Rain</span>
         ${agentTag}
+        ${visionBadge}
+        ${freshnessBadges}
         ${metaStr}
       </div>
       <div class="msg-body">${renderMarkdown(content)}</div>
@@ -2717,7 +3221,9 @@
             // ── File attachment state ──────────────────────────────────────────────
             const fileState = {
                 name: null,
-                content: null,
+                content: null, // text files
+                imageB64: null, // images — base64 string without data URI prefix
+                imageDataUrl: null, // full data URL for preview
             };
 
             const attachBtn = document.getElementById("attach-btn");
@@ -2731,6 +3237,8 @@
             function setFile(name, content) {
                 fileState.name = name;
                 fileState.content = content;
+                fileState.imageB64 = null;
+                fileState.imageDataUrl = null;
                 attachBtn.classList.add("has-file");
                 fileBadgeSlot.innerHTML = `
                     <div class="file-badge">
@@ -2742,9 +3250,31 @@
                 autoResize();
             }
 
+            function setImage(name, dataUrl, b64) {
+                fileState.name = name;
+                fileState.content = null;
+                fileState.imageB64 = b64;
+                fileState.imageDataUrl = dataUrl;
+                attachBtn.classList.add("has-file");
+                fileBadgeSlot.innerHTML = `
+                    <div class="image-badge">
+                        <img class="image-badge-thumb" src="${dataUrl}" alt="${escHtml(name)}">
+                        <div class="image-badge-info">
+                            <div class="image-badge-name">${escHtml(name)}</div>
+                            <div class="image-badge-label">👁️ vision ready</div>
+                        </div>
+                        <button class="image-badge-remove" onclick="clearFile()" title="Remove image">✕</button>
+                    </div>`;
+                chatInput.placeholder = `Ask Rain about this image...`;
+                chatInput.focus();
+                autoResize();
+            }
+
             function clearFile() {
                 fileState.name = null;
                 fileState.content = null;
+                fileState.imageB64 = null;
+                fileState.imageDataUrl = null;
                 attachBtn.classList.remove("has-file");
                 fileBadgeSlot.innerHTML = "";
                 chatInput.placeholder = "Ask Rain anything...";
@@ -2752,8 +3282,81 @@
                 autoResize();
             }
 
+            // Formats Ollama's vision models actually support.
+            const IMAGE_TYPES = new Set([
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+            ]);
+
+            // Broader pattern — anything that looks like an image file by
+            // extension or MIME type. Used to catch unsupported formats before
+            // they fall through to the text reader and produce binary garbage.
+            const IMAGE_LIKE_TYPES = new Set([
+                "image/avif",
+                "image/heic",
+                "image/heif",
+                "image/tiff",
+                "image/svg+xml",
+                "image/x-icon",
+                "image/vnd.microsoft.icon",
+                "image/jp2",
+                "image/jxl",
+                "image/webp2",
+            ]);
+            const IMAGE_LIKE_EXT =
+                /\.(avif|heic|heif|tiff?|svg|ico|jp2|jxl|raw|cr2|nef|dng|psd)$/i;
+
+            const SUPPORTED_IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|bmp)$/i;
+
             function readFile(file) {
-                // Guard: text files only, max 500KB
+                const looksLikeImage =
+                    IMAGE_TYPES.has(file.type) ||
+                    IMAGE_LIKE_TYPES.has(file.type) ||
+                    IMAGE_LIKE_EXT.test(file.name);
+
+                // Reject unsupported image formats with a clear message rather
+                // than letting them fall through to the text reader.
+                if (
+                    looksLikeImage &&
+                    !IMAGE_TYPES.has(file.type) &&
+                    !SUPPORTED_IMAGE_EXT.test(file.name)
+                ) {
+                    appendSystemMessage(
+                        `❌ Unsupported image format: ${file.name}\n` +
+                            `Supported formats: PNG, JPG, GIF, WebP, BMP`,
+                    );
+                    return;
+                }
+
+                // Branch: image vs text
+                if (
+                    IMAGE_TYPES.has(file.type) ||
+                    SUPPORTED_IMAGE_EXT.test(file.name)
+                ) {
+                    if (file.size > 10 * 1024 * 1024) {
+                        appendSystemMessage(
+                            `❌ Image too large (max 10MB): ${file.name}`,
+                        );
+                        return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const dataUrl = e.target.result;
+                        // Strip "data:image/...;base64," prefix — Ollama wants raw base64
+                        const b64 = dataUrl.split(",")[1];
+                        setImage(file.name, dataUrl, b64);
+                    };
+                    reader.onerror = () =>
+                        appendSystemMessage(
+                            `❌ Could not read image: ${file.name}`,
+                        );
+                    reader.readAsDataURL(file);
+                    return;
+                }
+                // Text file
                 if (file.size > 500 * 1024) {
                     appendSystemMessage(
                         `❌ File too large (max 500KB): ${file.name}`,
@@ -2767,9 +3370,97 @@
                 reader.readAsText(file);
             }
 
-            // Override sendMessage to prepend file content when present
+            // Override sendMessage to prepend file content or attach image when present
             const _originalSendMessage = sendMessage;
             sendMessage = async function () {
+                if (fileState.imageB64) {
+                    // Image path — inject image_b64 into the fetch body via a
+                    // one-shot override of the fetch call inside sendMessage.
+                    // We store the captured values, clear state, then call through.
+                    const capturedB64 = fileState.imageB64;
+                    const capturedDataUrl = fileState.imageDataUrl;
+                    const capturedName = fileState.name;
+                    const userText =
+                        chatInput.value.trim() ||
+                        "Describe and analyse this image in detail.";
+
+                    // Show image inline in the user message bubble
+                    state.currentQuery = userText;
+                    clearFile();
+                    chatInput.value = "";
+                    autoResize();
+
+                    // Render user bubble with thumbnail
+                    if (emptyState) emptyState.style.display = "none";
+                    const wrapper = document.createElement("div");
+                    wrapper.className = "msg-wrapper";
+                    wrapper.innerHTML = `
+                        <div class="msg">
+                            <div class="msg-header">
+                                <span class="msg-role user">You</span>
+                            </div>
+                            <div class="msg-body">
+                                <p>${escHtml(userText)}</p>
+                                <img class="msg-image-preview" src="${capturedDataUrl}" alt="${escHtml(capturedName)}">
+                            </div>
+                        </div>`;
+                    messagesEl.appendChild(wrapper);
+                    scrollToBottom();
+
+                    setThinkingState(true);
+                    setStatus("thinking", "thinking...");
+                    const progressEl = appendProgress();
+                    state.currentProgress = progressEl;
+
+                    try {
+                        _abortController = new AbortController();
+                        const res = await fetch("/api/chat", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            signal: _abortController.signal,
+                            body: JSON.stringify({
+                                message: userText,
+                                sandbox: sandboxToggle.checked,
+                                web_search: webSearchToggle.checked,
+                                image_b64: capturedB64,
+                            }),
+                        });
+                        if (!res.ok)
+                            throw new Error(`Server error: ${res.status}`);
+                        const reader = res.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buf = "";
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buf += decoder.decode(value, { stream: true });
+                            const lines = buf.split("\n");
+                            buf = lines.pop();
+                            for (const line of lines) {
+                                if (line.startsWith("data: ")) {
+                                    try {
+                                        const event = JSON.parse(line.slice(6));
+                                        handleEvent(event, progressEl);
+                                    } catch {}
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        removeProgress(progressEl);
+                        if (e.name === "AbortError") {
+                            appendSystemMessage("⛔ Stopped.");
+                            setStatus("ok", "stopped");
+                        } else {
+                            appendSystemMessage(`❌ ${e.message}`);
+                            setStatus("error", "error");
+                        }
+                    } finally {
+                        _abortController = null;
+                        setThinkingState(false);
+                    }
+                    return;
+                }
+
                 if (fileState.content) {
                     const query =
                         chatInput.value.trim() ||
@@ -2784,9 +3475,35 @@
             // ── Attach button ──────────────────────────────────────────────────────
             attachBtn.addEventListener("click", () => fileInput.click());
 
+            // Accept both text files and images
+            fileInput.setAttribute(
+                "accept",
+                [
+                    ".py,.js,.ts,.jsx,.tsx,.html,.css,.json,.md,.rs,.go,.sh,.txt,.yaml,.yml,.toml,.env,.sql",
+                    "image/png,image/jpeg,image/gif,image/webp,image/bmp",
+                ].join(","),
+            );
+
             fileInput.addEventListener("change", (e) => {
                 const file = e.target.files[0];
                 if (file) readFile(file);
+            });
+
+            // ── Clipboard paste — images ───────────────────────────────────────────
+            document.addEventListener("paste", (e) => {
+                if (state.thinking) return;
+                const items = e.clipboardData && e.clipboardData.items;
+                if (!items) return;
+                for (const item of items) {
+                    if (item.kind === "file" && IMAGE_TYPES.has(item.type)) {
+                        const file = item.getAsFile();
+                        if (file) {
+                            e.preventDefault();
+                            readFile(file);
+                        }
+                        return;
+                    }
+                }
             });
 
             // ── Drag and drop — full window ────────────────────────────────────────
@@ -2843,12 +3560,23 @@
             });
 
             forgetBtn.addEventListener("click", async () => {
-                if (!confirm("Wipe all Rain memory? This cannot be undone."))
+                if (
+                    !confirm(
+                        "Wipe all Rain memory? This clears:\n\n" +
+                            "  • All conversation history (sessions + messages)\n" +
+                            "  • Semantic embeddings (Tier 3)\n" +
+                            "  • Your persistent user profile (Tier 5)\n" +
+                            "  • Session facts Rain has learned about you\n" +
+                            "  • All feedback and corrections (Tier 4)\n\n" +
+                            "The project index (codebase semantic search) is preserved.\n\n" +
+                            "This cannot be undone.",
+                    )
+                )
                     return;
                 try {
                     await fetch("/api/forget", { method: "POST" });
                     sessionList.innerHTML =
-                        '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">Memory cleared.</div>';
+                        '<div style="padding:8px 16px;font-size:11px;color:var(--text-3)">All memory cleared — conversations, profile, corrections, and embeddings wiped.</div>';
                 } catch {}
             });
 

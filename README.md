@@ -1,6 +1,6 @@
 # Rain ⛈️ - Sovereign AI Ecosystem
 
-> **Status: Phase 5A Complete** — Semantic memory is live. Rain retrieves relevant past exchanges by meaning, not just recency. ⛈️🧠
+> **Status: Phase 10 Complete** — Knowledge graph live: Rain parses your codebase with Python AST + regex parsers for JS/TS/Rust/Go, builds a directed graph of functions, classes, methods, imports, and call relationships in SQLite. Git history integration answers "who wrote this and when?" Decision log extracts architectural choices from conversations automatically. Project onboarding generates LLM summaries. Cross-project intelligence finds patterns across codebases. Tested on Rain itself: 1,252 nodes, 2,466 edges, 3.0s. ⛈️🧠🌐📂⚡🐙🕸️
 
 *"Be like rain - essential, unstoppable, and free."*
 
@@ -19,6 +19,8 @@ Claude's answer was striking in its honesty. These are the things it wished it c
 - **Real execution** ✅ — Code is run before it is returned. Suggestions are tested. Hallucinated libraries are caught. Errors are corrected in a loop until the answer is true, not just plausible.
 - **Sovereignty** ✅ — Running on your hardware, under your rules, with your constraints. No one else's infrastructure. No one else's terms of service. No one else's visibility into what you're building.
 - **Consistency** — A stable identity that persists. The same values, the same knowledge of your work, the same collaborator — session after session. Not a tool you re-introduce yourself to. A presence that was already there.
+- **Perception** — Sees images, hears your voice, understands the world beyond text and beyond its training cutoff.
+- **Agency** — Takes on tasks autonomously, not just answers questions. Acts on your behalf, locally, with your approval.
 
 The first four are built. The fifth is what Rain is becoming.
 
@@ -176,18 +178,90 @@ Rain runs on `llama3.1` alone if nothing else is installed — specialized model
 - [x] `semantic_search()` — cosine similarity, pure stdlib, no numpy
 - [x] Three-tier memory context: episodic summaries + working memory + semantic retrieval
 - [x] Tier 3 injects top-3 most relevant past exchanges into every agent prompt by meaning, not recency
+- [x] **Tier 5 memory** — `session_facts` and `user_profile` tables in SQLite; LLM extracts structured facts (technologies, projects, preferences, decisions, goals) at session end; user profile accumulates confidence-weighted facts across all sessions; injected into every agent prompt so Rain persistently knows who you are and what you're building
 
-#### Phase 5B: Self-Improvement ⭐ NEXT
-- [ ] Feedback mechanism (mark responses good/bad inline in web UI)
-- [ ] Correction capture — save input/output pairs when user corrects Rain
-- [ ] Fine-tuning pipeline via LoRA adapters
-- [ ] A/B testing between base and fine-tuned models
+#### Phase 5B: Self-Improvement ✅ COMPLETE
+- [x] 👍/👎 feedback buttons rendered on every Rain response in the web UI
+- [x] Correction capture — inline textarea: "What should it have said?"
+- [x] All feedback persisted to `feedback` table in SQLite with semantic embedding of the query
+- [x] Tier 4 memory — past corrections retrieved by semantic similarity and injected into prompts as negative examples immediately, before any fine-tuning run
+- [x] `finetune.py` — standalone CLI pipeline: `--status`, `--export`, `--train`, `--create-model`, `--full`, `--ab-report`
+- [x] Exports corrections in Alpaca JSONL (HuggingFace/Unsloth compatible) and ChatML (llama.cpp) formats
+- [x] LoRA adapter training via `llama.cpp llama-finetune` binary
+- [x] `rain-tuned` Ollama model registered and automatically preferred by primary agents
+- [x] A/B results tracked in `ab_results` table — Rain detects when the tuned model is winning and routes to it
 
-### Phase 6: Autonomous Agent Mode
-- [ ] Task decomposition and planning
-- [ ] Tool use (read/write files, run commands)
-- [ ] Human-in-the-loop checkpoints
-- [ ] Full audit log
+### Phase 6: Autonomous Agent Mode ✅ FOUNDATION COMPLETE
+- [x] Task decomposition — `AgentRouter.is_complex_task()` detects multi-step goals; `execute_task()` generates a numbered plan, shows it to the user, executes each step with per-step agent routing
+- [x] Tool use — `tools.py` `ToolRegistry`: `read_file`, `write_file` (backup-before-overwrite), `list_dir`, `run_command` (confirmed, hard timeout)
+- [x] Git-awareness — `git_status`, `git_log`, `git_diff`, `git_commit` (with confirmation); all ops logged to `~/.rain/audit.log`
+- [x] Human-in-the-loop checkpoints — plan shown before any action; each destructive operation confirms separately
+- [x] Full audit log — every file touched, every command run, every git operation logged with timestamp
+- [x] `skills.py` — OpenClaw/ClawBot skill runtime; `--skills`, `--install-skill`, `--task` CLI flags; `/api/skills` endpoint
+- [ ] Long-running task support — give Rain a multi-hour goal and let it work unattended (Phase 6B)
+- [ ] Skills web UI panel — browse and install skills from the chat interface (Phase 6B)
+
+### Phase 7: Real-Time World Awareness ✅ COMPLETE
+- [x] Search Agent — `AgentType.SEARCH` with dedicated system prompt; routes automatically on live-data queries and web-search-augmented messages
+- [x] DuckDuckGo search promoted to first-class routing target — web UI toggle, `--web-search` / `-w` CLI flag, auto-routes to Search Agent
+- [x] `indexer.py` — `ProjectIndexer`: walks project trees, skips build artifacts/binaries, chunks + embeds files with `nomic-embed-text`, stores in `project_index` table in `memory.db`; CLI: `--index`, `--search`, `--list`, `--tree`, `--remove`
+- [x] Codebase awareness — `project_path` on `ChatRequest` injects top-4 most relevant file chunks into every agent; `/api/index-project` and `/api/indexed-projects` endpoints
+- [x] OpenAI-compatible `/v1/chat/completions` — works with ZED, Continue.dev, Aider, Cursor, OpenAI SDK; streaming + non-streaming; any API key accepted; **live-tested** ✅
+- [x] `rain-vscode/` extension — chat panel, inline commands (Ask/Explain/Refactor/Find Bugs/Write Tests), `Cmd+Shift+R` hotkey, Rain: Index This Project, server health status bar
+- [x] Live data feeds — `mempool.space/api/v1/fees/recommended` (sat/vB fee rates) and `/api/v1/prices` (BTC/USD); injected as `[LIVE DATA]` block before DuckDuckGo snippets; **live-tested** ✅
+- [x] GitHub API awareness — `_fetch_github_data()` calls `api.github.com` for repo metadata, open issues, recent commits, PRs, and latest release; no API key required for public repos; keyword detection + `owner/repo` slug extraction via regex; wired into `_fetch_live_data()` and CLI `_cli_fetch_live_data()`; **live-tested** ✅
+- [x] Freshness indicators — `data_sources` field on every SSE `done` event; web UI renders color-coded badges: ⚡ live (green), 🌐 web (blue), 📂 indexed (yellow), 💾 training data (gray)
+- [x] Project index web UI panel — "Projects" section in sidebar with file/chunk counts and last-indexed timestamp; re-index (⟳) and remove (×) buttons per project; "Index Project" modal with path input and force-reindex checkbox
+- [x] Background file watcher — `_file_watcher_loop()` thread runs every 60s, checks indexed projects for changed files via mtime comparison, auto-re-indexes modified and new files; `get_changed_files()` on `ProjectIndexer`; `/api/indexed-projects/{path}/changed` endpoint
+- [ ] VSCode extension published to marketplace (deferred — scaffold is installable as `.vsix`)
+
+### Phase 8: Voice & Ambient Interface ⭐ NEXT
+- [ ] Speech-to-text via `whisper.cpp` — fully local, no API key, real-time on consumer CPU
+- [ ] Text-to-speech via `piper-tts` — local, natural-sounding voice output
+- [ ] Wake word detection via `openwakeword` — "Hey Rain" without a button press, nothing uploaded
+- [ ] Microphone button in web UI — hold to record, release to send; Rain responds in text and voice
+- [ ] `python3 rain.py --voice` CLI mode
+- [ ] Ambient mode — Rain runs in the background, listens for wake word, no browser required
+
+### Phase 9: Multimodal Perception ✅ COMPLETE
+- [x] `moondream:latest` via Ollama — fully local, zero cloud, zero new pip deps
+- [x] Drag-and-drop any image (PNG, JPG, GIF, WebP, BMP) directly into the chat
+- [x] Clipboard paste — `Ctrl+V` / `Cmd+V` a screenshot straight into the input
+- [x] Image thumbnail preview badge renders in the input area before sending
+- [x] Inline image preview in the user message bubble so you see what Rain is processing
+- [x] Vision pre-processing in `_query_agent` — moondream describes the image, description injected as directive context into every agent in the pipeline
+- [x] Dev Agent debugs screenshots, Logic Agent reasons about diagrams, Domain Expert reads whiteboards
+- [x] 👁️ vision badge on Rain's response whenever an image was processed
+- [x] `VISION_PREFERRED_MODELS` list — Rain auto-selects best installed vision model (`moondream` → `llava` → `llava:7b` → `bakllava`)
+- [x] Graceful degradation — if no vision model installed, Rain tells you exactly how to fix it
+- [x] `codestral:latest` (22B dedicated code model) promoted to primary Dev Agent
+
+### Phase 10: Knowledge Graph & Deep Project Intelligence ✅ COMPLETE
+- [x] `knowledge_graph.py` — `KnowledgeGraph` class: SQLite schema (`kg_nodes`, `kg_edges`, `kg_decisions`, `kg_project_summaries`), Python AST parser, JS/TS/Rust/Go regex parsers, git history integration, decision log, project onboarding, cross-project search; standalone CLI with `--build`, `--onboard`, `--find`, `--callers`, `--callees`, `--history`, `--blame`, `--decisions`, `--context`, `--cross-project`, `--stats`
+- [x] Project graph — directed graph in SQLite: nodes are files, functions, classes, methods, imports; edges are calls, contains, inherits, imports, references; **live-tested on Rain: 1,252 nodes, 2,466 edges in 3.0s** ✅
+- [x] Git history integration — `get_git_history()`, `get_file_blame_summary()`, `get_commit_for_function()` trace any function to the commit that introduced it; `_index_git_history()` runs during graph build
+- [x] Decision log — `log_decision()` for manual logging, `extract_decisions_from_transcript()` uses LLM to auto-extract architectural decisions at session end; `list_decisions()`, `search_decisions()` for retrieval; stored in `kg_decisions` table
+- [x] Project onboarding — `onboard_project()` builds graph + generates LLM summary; stored in `kg_project_summaries`; `get_project_summary()` retrieves it
+- [x] Cross-project intelligence — `find_similar_patterns()` searches nodes and decisions across all indexed projects by keyword
+- [x] Agent context injection — `build_context_block()` extracts identifiers from queries, looks up graph nodes, callers/callees, matching decisions, and git history; injected into `_stream_chat()` alongside project index context; 🧠 graph freshness badge in UI
+- [x] Server endpoints — `/api/build-graph`, `/api/onboard-project`, `/api/graph/stats`, `/api/graph/summary`, `/api/graph/find`, `/api/graph/callers`, `/api/graph/callees`, `/api/graph/file-structure`, `/api/graph/history`, `/api/decisions` (GET + POST), `/api/decisions/search`, `/api/graph/cross-project`
+- [x] Auto decision extraction — at session end, server extracts decisions from conversation transcript and persists to `kg_decisions`
+
+### Phase 11: Metacognition & Self-Directed Evolution
+- [ ] Performance dashboard — tracks confidence by query type, agent routing patterns, uncertainty hotspots
+- [ ] Gap detection — after N sessions, Rain identifies topics where it is consistently uncertain
+- [ ] Self-generated training data — high-confidence uncorrected responses become positive examples automatically
+- [ ] Metacognition agent — runs weekly, reviews sessions, writes a "what I've learned" summary to memory
+- [ ] Improvement proposals — Rain proposes changes to its own system prompts, routing rules, confidence thresholds; you approve or reject
+- [ ] Calibration — Rain tracks when confidence scores were right vs. wrong and adjusts heuristics over time
+
+### Phase 12: Sovereign Identity & Distributed Rain
+- [ ] Full export — `python3 rain.py --export` produces a single portable archive of everything Rain knows about you
+- [ ] Nostr identity — Rain gets a keypair; memory snapshots can be signed and published to a relay you control
+- [ ] Cross-device sync — two Rain instances with the same keypair sync memory over a private Nostr relay
+- [ ] Adapter sharing — publish fine-tuned LoRA adapters to a Nostr relay; pull community-built domain expertise
+- [ ] Lightning-native micropayments — optional routing to more powerful remote models, paid per-query over Lightning; no subscriptions, no accounts
+- [ ] Air-gap mode — full documentation for running Rain on a machine with zero network access
 
 ## Getting Started
 

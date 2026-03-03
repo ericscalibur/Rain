@@ -39,3 +39,4 @@ build/
 
 # Rain memory (stored in ~/.rain/ but just in case)
 memory.db
+.aider*
