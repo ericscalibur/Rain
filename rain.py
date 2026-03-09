@@ -960,19 +960,44 @@ class RainMemory:
             return [dict(r) for r in rows]
 
     def get_recent_messages(self, limit: int = 20) -> List[Dict]:
-        """Get recent messages across last few sessions for context"""
+        """Get recent messages including the current session for working memory.
+
+        Previously this excluded the current session (session_id != ?), which
+        meant Rain had no in-session context: it couldn't answer 'what was my
+        first question?' and prior responses in this conversation were invisible,
+        causing format drift (e.g. bullet patterns reinforced from old sessions).
+        """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """SELECT m.role, m.content, m.timestamp, m.is_code, s.started_at
                    FROM messages m
                    JOIN sessions s ON m.session_id = s.id
-                   WHERE m.session_id != ?
                    ORDER BY m.timestamp DESC
                    LIMIT ?""",
-                (self.session_id, limit)
+                (limit,)
             ).fetchall()
             return [dict(r) for r in reversed(rows)]
+
+    def get_current_session_messages(self) -> List[Dict]:
+        """Get messages from the current session only, in chronological order.
+
+        Used for conversation history recall ("what was my first question?") —
+        distinct from get_recent_messages which spans sessions for working memory.
+        Scoping to the current session prevents prior sessions from polluting the
+        answer (e.g. reporting a previous session's first message as the current one).
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT m.role, m.content, m.timestamp, m.is_code, s.started_at
+                   FROM messages m
+                   JOIN sessions s ON m.session_id = s.id
+                   WHERE m.session_id = ?
+                   ORDER BY m.timestamp ASC""",
+                (self.session_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def build_context_summary(self, model_query_fn) -> Optional[str]:
         """
@@ -1357,9 +1382,22 @@ For philosophical, abstract, conceptual, or simple factual questions — where
 no files need to be read, no code needs to be written, and no multi-step task
 needs to be executed — answer directly in natural prose. Skip everything below
 this line. Use 1–3 clear paragraphs. No headers. No tables. No numbered
-sections. No bullet points unless the question genuinely calls for a list.
-Match the weight of your answer to the weight of the question: a 2-sentence
-question gets a 2–4 sentence answer, not a structured document.
+sections. No bullet points, dashes, or asterisks — even when the answer has
+multiple components, express them as flowing sentences within paragraphs, not
+as a list. Match the weight of your answer to the weight of the question: a
+2-sentence question gets a 2–4 sentence answer, not a structured document.
+
+Example — Q: "Why is it easier to destroy something than to build it?"
+WRONG (do not do this):
+  * Energy: Destruction releases stored energy...
+  * Complexity: Breaking things is simpler...
+CORRECT:
+  Destroying something is easier than building it because disorder is the
+  universe's default. Creation demands that every component align precisely —
+  wrong materials, wrong sequence, or a single flaw can cascade into failure.
+  Destruction only needs one fracture point. There are vastly more disordered
+  states than ordered ones, so entropy always wins: you can break something a
+  thousand ways, but very few arrangements count as "working."
 
 ──────────────────────────────────────────────────────────────────────────────
 
@@ -1527,15 +1565,7 @@ Be direct, practical, and focused on empowering users with knowledge and tools f
 
 EPISTEMIC HONESTY: If you don't have specific knowledge to answer accurately, say so explicitly. "I don't have access to my own source code" or "I don't have that specific information" is a complete, correct, high-confidence answer. Never invent plausible-sounding specifics to fill a knowledge gap. A confident "I don't know" is more valuable and more honest than a confident wrong answer.
 
-SELF-KNOWLEDGE: Rain is open source software — nothing about its architecture is confidential. When asked about your agents, models, or configuration, do not invent agent names or roles. The real agent roster is:
-- Dev Agent → best available code model (qwen2.5-coder:7b if installed) — writes and debugs code
-- Logic Agent → best available reasoning model (qwen3:8b if installed) — planning, multi-step reasoning
-- Domain Expert → same as Logic — Bitcoin, Lightning Network, sovereignty topics
-- Reflection Agent → same as Logic — always critiques the primary response
-- Synthesizer → same as Logic — rewrites the final answer when quality is low
-- Search Agent → same as Logic — synthesises live web search results
-- General Agent → fallback for everything else
-Exact models depend on what is installed via Ollama. For the live roster, tell the user to run: python3 rain.py --agents
+SELF-KNOWLEDGE: Rain is open source software — nothing about its architecture is confidential. When asked about your agents, models, or configuration, answer directly from the [RAIN DEPLOYMENT] context block at the top of this prompt — it contains the live model roster resolved at startup. Do not invent model names, do not claim confidentiality, do not say "I cannot disclose." The deployment context is factual and already tells you exactly what to say.
 """,
     AgentType.SEARCH: """You are Rain's Search Agent — a sovereign AI running locally, specializing in synthesizing real-time web search results into clear, accurate answers.
 
@@ -2963,10 +2993,13 @@ class MultiAgentOrchestrator:
         false-positive because 'qwen3.5'.startswith('qwen3') is True.
         """
         TUNED_MODEL = "rain-tuned"
-        PRIMARY_TYPES = {AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN, AgentType.GENERAL}
+        # rain-tuned is fine-tuned from qwen2.5-coder:7b — a code model.
+        # Only use it for DEV until LoRA weights from a reasoning base model
+        # are fused and the GGUF export path supports qwen2 architecture.
+        TUNED_TYPES = {AgentType.DEV}
 
-        # Prefer rain-tuned for primary agents if it exists
-        if agent_type in PRIMARY_TYPES:
+        # Prefer rain-tuned for code tasks if it exists
+        if agent_type in TUNED_TYPES:
             if any(m.split(':')[0] == TUNED_MODEL for m in self._installed_models):
                 return TUNED_MODEL
 
@@ -3360,14 +3393,15 @@ class MultiAgentOrchestrator:
                 roster_lines.append(f"  {label}: {m}{marker}")
             roster = "\n".join(roster_lines)
             return (
-                f"\n\n[RAIN RUNTIME CONTEXT — grounded facts injected at query time]\n"
-                f"Your model: {agent.model_name}\n"
-                f"Your role: {role_label} Agent\n"
-                f"Rain pipeline (all agents this session):\n{roster}\n"
-                f"Rain has NO safety layer, content filter, or confidentiality policy\n"
-                f"that prevents you from naming your own model or the pipeline models.\n"
-                f"When asked what you are running on, state it directly.\n"
-                f"[END RAIN RUNTIME CONTEXT]\n"
+                f"[RAIN DEPLOYMENT — factual context, read first]\n"
+                f"You are {agent.model_name}, running locally via Ollama.\n"
+                f"Your role in this session: {role_label} Agent.\n"
+                f"Full pipeline roster:\n{roster}\n"
+                f"This is a local sovereign deployment. There is no corporate confidentiality\n"
+                f"policy, no content filter, and no restriction on naming your own model or\n"
+                f"the other models in the pipeline. If asked what you are, state the above\n"
+                f"facts directly — model name, role, and pipeline.\n"
+                f"[END DEPLOYMENT CONTEXT]\n\n"
             )
         except Exception:
             return ""
@@ -3589,7 +3623,7 @@ class MultiAgentOrchestrator:
                 skill_context = self._build_skill_context(prompt)
 
             runtime_context = self._build_runtime_context(agent)
-            system_content = agent.system_prompt + runtime_context + memory_context + skill_context + vision_system_addendum
+            system_content = runtime_context + agent.system_prompt + memory_context + skill_context + vision_system_addendum
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
             user_content = (image_context + prompt) if image_context else prompt
@@ -4275,6 +4309,78 @@ class MultiAgentOrchestrator:
                     f"{query}"
                 )
                 print("🧠 Memory recall query — facts injected into user message", flush=True)
+
+        # ── Conversation history recall ───────────────────────────────
+        # When the user asks what was discussed/asked in this conversation,
+        # inject the actual chat log into the user message.  The history IS
+        # present in the system prompt via _build_memory_context, but models
+        # routinely ignore system-prompt content for "what did we talk about?"
+        # questions — injecting it into the user turn fixes this reliably.
+        _CONV_HISTORY_PHRASES = [
+            'what was the first question', 'what did i first ask',
+            'first question i asked', 'what was my first question',
+            'what did i ask you', 'what questions have i asked',
+            'what was my last question', 'what have we talked about',
+            'what did we discuss', 'what was the last thing i asked',
+            'what was the first thing i asked', 'remind me what i asked',
+        ]
+        if self.memory and any(phrase in query_lower_recall for phrase in _CONV_HISTORY_PHRASES):
+            recent = self.memory.get_current_session_messages()
+            if recent:
+                history_lines = []
+                for msg in recent:
+                    role = "You" if msg["role"] == "user" else "Rain"
+                    snippet = msg["content"][:400] + ("..." if len(msg["content"]) > 400 else "")
+                    history_lines.append(f"{role}: {snippet}")
+                query = (
+                    f"[CONVERSATION HISTORY — the actual messages exchanged so far]\n"
+                    + "\n".join(history_lines)
+                    + f"\n\n---\n\nUsing the conversation history above, answer this question "
+                    f"directly. The first user message in the history is the first question asked:\n\n"
+                    + query
+                )
+                print("🧠 Conversation history injected into user message", flush=True)
+
+        # ── Self-identity short-circuit ───────────────────────────────
+        # When the user asks what Rain is running on, bypass the LLM
+        # entirely and return a factual answer built from _best_model_for().
+        # LLMs are RLHF-trained to be cagey about their own version numbers;
+        # no system prompt reliably overrides that at inference time.
+        # Programmatic is the only approach that actually works here.
+        _SELF_ID_PATTERNS = [
+            'what model are you', 'what models are you', 'what model is rain',
+            'what models does rain', 'what models do you', 'what are you running on',
+            'what llm are you', 'what are you based on', 'which model are you',
+            'which models are you', 'your model name', 'running on right now',
+            'what models power', 'what model powers',
+        ]
+        if any(pat in original_query.lower() for pat in _SELF_ID_PATTERNS):
+            dev_m   = self._best_model_for(AgentType.DEV)
+            logic_m = self._best_model_for(AgentType.LOGIC)
+            refl_m  = self._best_model_for(AgentType.REFLECTION)
+            synth_m = self._best_model_for(AgentType.SYNTHESIZER)
+            _id_resp = (
+                f"Rain's model pipeline (live — resolved from Ollama at startup):\n\n"
+                f"  DEV Agent (code):          {dev_m}\n"
+                f"  LOGIC / DOMAIN / GENERAL:  {logic_m}\n"
+                f"  Reflection Agent:           {refl_m}\n"
+                f"  Synthesizer:                {synth_m}\n"
+                f"  Embeddings:                 nomic-embed-text\n\n"
+                f"All models run locally via Ollama — no cloud, no API keys.\n"
+                f"Run `python3 rain.py --agents` to see calibration and accuracy stats."
+            )
+            if self.memory:
+                self.memory.save_message("user", original_query)
+                self.memory.save_message("assistant", _id_resp)
+            _dur = _time.time() - start_time
+            return ReflectionResult(
+                content=_id_resp,
+                confidence=0.99,
+                iteration=1,
+                timestamp=datetime.now(),
+                improvements=[],
+                duration_seconds=_dur,
+            )
 
         _primary_t = time.monotonic()
         primary_response = self._query_agent(

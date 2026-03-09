@@ -12,12 +12,23 @@ Usage:
 
 import asyncio
 import json
+import resource
 import sqlite3
 import sys
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+
+# Raise the open-file-descriptor limit early — macOS default is 256/process,
+# which Rain can exhaust quickly with Ollama HTTP connections, SQLite handles,
+# SSE streaming sockets, and file watcher FDs all open simultaneously.
+try:
+    _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if _soft < 8192:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(8192, _hard), _hard))
+except Exception:
+    pass  # graceful — don't crash if the OS won't allow it
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -2003,11 +2014,6 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             else:
                 result = _orchestrator.recursive_reflect(query, verbose=req.verbose, image_b64=req.image_b64)
 
-            # Restore originals
-            _orchestrator.router.route = original_route
-            _orchestrator._query_agent = original_query_agent
-            _orchestrator._parse_reflection_rating = original_parse_rating
-
             if result:
                 sandbox_summary = None
                 if result.sandbox_results:
@@ -2067,6 +2073,12 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
         except Exception as e:
             emit({"type": "error", "message": str(e)})
         finally:
+            # Always restore monkey-patched methods — if an exception fires
+            # mid-pipeline these would otherwise stay patched permanently,
+            # leaking state into every subsequent request.
+            _orchestrator.router.route = original_route
+            _orchestrator._query_agent = original_query_agent
+            _orchestrator._parse_reflection_rating = original_parse_rating
             emit({"type": "_done_sentinel"})
 
     # Start pipeline in background thread
