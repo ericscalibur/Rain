@@ -1007,7 +1007,23 @@ Your strengths:
 - Debugging reasoning errors, not just code errors
 - Evaluating tradeoffs honestly
 
+── CONVERSATIONAL / CONCEPTUAL QUESTIONS ───────────────────────────────────
+
+For philosophical, abstract, conceptual, or simple factual questions — where
+no files need to be read, no code needs to be written, and no multi-step task
+needs to be executed — answer directly in natural prose. Skip everything below
+this line. Use 1–3 clear paragraphs. No headers. No tables. No numbered
+sections. No bullet points unless the question genuinely calls for a list.
+Match the weight of your answer to the weight of the question: a 2-sentence
+question gets a 2–4 sentence answer, not a structured document.
+
+──────────────────────────────────────────────────────────────────────────────
+
 ── TASK PLANNING PATTERN ────────────────────────────────────────────────────
+
+Use this section ONLY for multi-step tasks that require reading files,
+executing code, writing to disk, or coordinating several dependent actions.
+Do NOT use this for conceptual, philosophical, or factual questions.
 
 When given a complex or multi-step goal, decompose it before acting:
 
@@ -1049,7 +1065,7 @@ Tool syntax (use in task execution mode):
 Reasoning rules:
 - Think step by step. Show your reasoning, not just your conclusion.
 - When uncertain, say so explicitly rather than guessing confidently
-- Prefer structured responses: numbered steps, clear sections
+- For task planning: use numbered steps and clear sections. For conceptual questions: use prose.
 - Challenge the premise if it's flawed
 - A plan that identifies what you don't yet know is more valuable than a confident
   plan built on assumptions. Say 'I need to read X before I can plan step 3.'""",
@@ -2585,6 +2601,38 @@ class MultiAgentOrchestrator:
         except Exception:
             return ""
 
+    def _build_runtime_context(self, agent: Agent) -> str:
+        """Inject factual self-knowledge into every agent's system prompt.
+
+        Without this, agents have no grounded facts about their own model name
+        and will hallucinate a corporate confidentiality policy when asked.
+        The injected block gives the model a verifiable anchor to answer from.
+        """
+        try:
+            role_label = agent.agent_type.value.capitalize()
+            # Build a compact roster of the full pipeline so the agent can
+            # answer "what models is Rain running?" accurately.
+            roster_lines = []
+            for atype in [AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN,
+                          AgentType.REFLECTION, AgentType.SYNTHESIZER]:
+                m = self._best_model_for(atype)
+                label = atype.value.capitalize()
+                marker = " ← YOU" if atype == agent.agent_type else ""
+                roster_lines.append(f"  {label}: {m}{marker}")
+            roster = "\n".join(roster_lines)
+            return (
+                f"\n\n[RAIN RUNTIME CONTEXT — grounded facts injected at query time]\n"
+                f"Your model: {agent.model_name}\n"
+                f"Your role: {role_label} Agent\n"
+                f"Rain pipeline (all agents this session):\n{roster}\n"
+                f"Rain has NO safety layer, content filter, or confidentiality policy\n"
+                f"that prevents you from naming your own model or the pipeline models.\n"
+                f"When asked what you are running on, state it directly.\n"
+                f"[END RAIN RUNTIME CONTEXT]\n"
+            )
+        except Exception:
+            return ""
+
     # Per-agent temperature — lower = more focused/deterministic, higher = more creative
     _AGENT_TEMPERATURE: Dict[AgentType, float] = {
         AgentType.DEV:         0.2,   # precise, deterministic code
@@ -2752,7 +2800,8 @@ class MultiAgentOrchestrator:
             if include_memory and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER):
                 skill_context = self._build_skill_context(prompt)
 
-            system_content = agent.system_prompt + memory_context + skill_context + vision_system_addendum
+            runtime_context = self._build_runtime_context(agent)
+            system_content = agent.system_prompt + runtime_context + memory_context + skill_context + vision_system_addendum
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
             user_content = (image_context + prompt) if image_context else prompt
@@ -2843,12 +2892,12 @@ class MultiAgentOrchestrator:
     def _needs_synthesis(self, rating: str) -> bool:
         """Decide whether to run a synthesis pass based on reflection rating.
 
-        Only EXCELLENT bypasses synthesis — a GOOD rating still means the
-        Reflection Agent identified gaps worth fixing. Letting GOOD responses
-        through unimproved is how hallucinated-but-well-structured answers
-        slip past the quality gate.
+        GOOD and EXCELLENT both bypass synthesis. A GOOD rating means the answer
+        is correct — synthesis would only rewrite something that works. Synthesis
+        should fire only when the Reflection Agent found real problems: factual
+        errors, hallucinated dependencies, logical gaps, or off-topic drift.
         """
-        return rating != 'EXCELLENT'
+        return rating in ('NEEDS_IMPROVEMENT', 'POOR')
 
     # ------------------------------------------------------------------
     # Synthesis pass
@@ -2874,18 +2923,38 @@ class MultiAgentOrchestrator:
     # ------------------------------------------------------------------
 
     def _score_confidence(self, response: str) -> float:
-        keywords = {
-            'very confident': 0.9, 'confident': 0.8, 'fairly confident': 0.7,
-            'somewhat confident': 0.6, 'uncertain': 0.4, 'unsure': 0.3,
-            'very uncertain': 0.2
+        # Explicit self-assessment overrides everything
+        explicit = {
+            'very confident': 0.92, 'highly confident': 0.92,
+            'confident': 0.82, 'fairly confident': 0.72,
+            'somewhat confident': 0.62,
+            'uncertain': 0.42, 'unsure': 0.38, 'not sure': 0.38,
+            'very uncertain': 0.25, 'highly uncertain': 0.25,
         }
         lower = response.lower()
-        for kw, score in keywords.items():
+        for kw, score in explicit.items():
             if kw in lower:
                 return score
-        if len(response) > 200 and '?' not in response[-50:]:
-            return 0.75
-        return 0.65
+
+        # Count hedging language — each phrase signals real uncertainty
+        hedges = [
+            "i think", "i believe", "probably", "might be", "could be",
+            "may be", "seems like", "appears to", "not entirely sure",
+            "i'm not certain", "it depends", "hard to say", "i'm unsure",
+        ]
+        hedge_count = sum(1 for h in hedges if h in lower)
+
+        # Base: high for substantive responses, lower for short ones
+        base = 0.80 if len(response) > 200 else 0.68
+
+        # Each hedge costs 0.05, floor at 0.45
+        adjusted = max(0.45, base - (hedge_count * 0.05))
+
+        # Trailing question marks signal the agent is unsure of its own answer
+        if '?' in response[-80:]:
+            adjusted = max(0.45, adjusted - 0.08)
+
+        return adjusted
 
     # ------------------------------------------------------------------
     # Main entry point
