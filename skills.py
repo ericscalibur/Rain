@@ -264,8 +264,8 @@ class SkillLoader:
             if not skill.env_satisfied and skill.primary_env:
                 score -= 1
 
-            if score > 0:
-                scored.append((score, skill))
+            if score >= 3:
+                    scored.append((score, skill))
 
         # Sort by score descending
         scored.sort(key=lambda x: x[0], reverse=True)

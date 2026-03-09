@@ -1655,6 +1655,15 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-row">
+                        <span class="toggle-label">
+                            📝 <span>Verbose</span>
+                        </span>
+                        <label class="toggle">
+                            <input type="checkbox" id="verbose-toggle" />
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="btn-ghost" id="forget-btn">
                         🗑️ Forget all memory
                     </button>
@@ -1929,6 +1938,7 @@
             const statusText = document.getElementById("status-text");
             const sandboxToggle = document.getElementById("sandbox-toggle");
             const webSearchToggle = document.getElementById("websearch-toggle");
+            const verboseToggle = document.getElementById("verbose-toggle");
             const forgetBtn = document.getElementById("forget-btn");
             const sidebar = document.getElementById("sidebar");
             const sidebarToggle = document.getElementById("sidebar-toggle");
@@ -1984,16 +1994,17 @@
                     const data = await res.json();
                     const { good, bad, corrections, ready } = data;
 
-                    if (corrections === 0 && good === 0) {
+                    const trainable = good + corrections;
+                    if (trainable === 0 && bad === 0) {
                         badge.textContent =
-                            "No feedback yet — use 👍👎 to train Rain";
+                            "No feedback yet — 👍 and 👎 both train Rain";
                     } else {
                         badge.innerHTML =
                             `👍 ${good} good &nbsp;·&nbsp; 👎 ${bad} bad<br>` +
-                            `✏️ ${corrections} correction${corrections !== 1 ? "s" : ""}` +
-                            (ready
+                            `📦 ${trainable} trainable example${trainable !== 1 ? "s" : ""}` +
+                            (trainable >= 10
                                 ? ` <span style="color:#4ade80">— ready to train</span>`
-                                : ` <span style="color:var(--text-3)">(need ${10 - corrections} more)</span>`);
+                                : ` <span style="color:var(--text-3)">(${10 - trainable} more to go)</span>`);
                     }
 
                     if (corrections > 0) {
@@ -2523,6 +2534,7 @@
                             message: text,
                             sandbox: sandboxToggle.checked,
                             web_search: webSearchToggle.checked,
+                            verbose: verboseToggle.checked,
                         }),
                     });
 
@@ -2719,11 +2731,11 @@
                 correctionDiv.className = "feedback-correction";
                 correctionDiv.style.display = "none";
                 correctionDiv.innerHTML = `
-                    <div class="correction-label">What should it have said? (optional — helps Rain improve)</div>
-                    <textarea class="correction-input" placeholder="The better answer would be..."></textarea>
+                    <div class="correction-label">What was wrong? Writing a correction trains Rain directly — even one sentence helps.</div>
+                    <textarea class="correction-input" placeholder="The correct answer is... / It should have said... / It missed that..."></textarea>
                     <div class="correction-actions">
-                        <button class="correction-skip">Skip</button>
-                        <button class="correction-submit">Save correction</button>
+                        <button class="correction-skip">Skip (still logged)</button>
+                        <button class="correction-submit">Save &amp; train</button>
                     </div>
                 `;
 
@@ -3422,6 +3434,7 @@
                                 message: userText,
                                 sandbox: sandboxToggle.checked,
                                 web_search: webSearchToggle.checked,
+                                verbose: verboseToggle.checked,
                                 image_b64: capturedB64,
                             }),
                         });

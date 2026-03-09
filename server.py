@@ -36,6 +36,7 @@ from rain import (
     AgentType,
     CodeSandbox,
     _SKILLS_AVAILABLE,
+    auto_pick_default_model,
 )
 
 # Phase 7: Project indexer — lazy import so Rain still works if indexer.py is absent
@@ -70,10 +71,11 @@ _skill_loader: Optional['SkillLoader'] = None  # Phase 6
 async def lifespan(app: FastAPI):
     """Initialize Rain on startup, clean up on shutdown."""
     global _orchestrator, _memory, _skill_loader
+    _default_model = auto_pick_default_model()
     _memory = RainMemory()
-    _memory.start_session(model="llama3.1")
+    _memory.start_session(model=_default_model)
     _orchestrator = MultiAgentOrchestrator(
-        default_model="llama3.1",
+        default_model=_default_model,
         memory=_memory,
         sandbox_enabled=False,  # user can toggle per request
     )
@@ -159,6 +161,8 @@ class FeedbackRequest(BaseModel):
     response: str
     rating: str  # 'good' or 'bad'
     correction: Optional[str] = None
+    agent_type: Optional[str] = None   # which agent produced this response
+    confidence: Optional[float] = None  # confidence score at time of response
 
 
 # ── OpenAI-compatible request model (Phase 7 — IDE integration) ────────
@@ -857,7 +861,23 @@ async def save_feedback(req: FeedbackRequest):
         response=req.response,
         rating=req.rating,
         correction=req.correction,
+        agent_type=req.agent_type,
+        confidence=req.confidence,
     )
+    # Attach rating to synthesis_log if this query was synthesized — lets us
+    # track whether the synthesizer is actually improving responses over time.
+    try:
+        import hashlib
+        qhash = hashlib.md5(req.query.encode()).hexdigest()
+        _memory.update_synthesis_rating(qhash, req.rating)
+    except Exception:
+        pass
+    # Refresh calibration factors so the next request benefits immediately
+    if _orchestrator:
+        try:
+            _orchestrator._calibration_factors = _memory.get_calibration_factors()
+        except Exception:
+            pass
     return {"status": "ok"}
 
 
@@ -1969,8 +1989,19 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                 else:
                     emit({"type": "progress", "message": "⚠️ No vision model installed — run: ollama pull llama3.2-vision  (or: ollama pull llava:7b for a lighter option)"})
 
-            # Run the full pipeline
-            result = _orchestrator.recursive_reflect(query, verbose=req.verbose, image_b64=req.image_b64)
+            # Propagate active project path onto the orchestrator so
+            # _build_memory_context can proactively query the knowledge graph.
+            if req.project_path:
+                _orchestrator.project_path = req.project_path
+
+            # Auto-detect react vs reflect — ReAct wins when the query signals
+            # real-world discovery (filesystem, git, logs) AND tools are loaded.
+            _mode = _orchestrator._auto_mode(query, image_b64=req.image_b64)
+            if _mode == 'react':
+                emit({"type": "progress", "message": f"⚡ Auto-selected ReAct mode (discovery query detected)"})
+                result = _orchestrator.react_loop(query, verbose=req.verbose)
+            else:
+                result = _orchestrator.recursive_reflect(query, verbose=req.verbose, image_b64=req.image_b64)
 
             # Restore originals
             _orchestrator.router.route = original_route

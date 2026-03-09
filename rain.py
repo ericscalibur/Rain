@@ -49,6 +49,11 @@ except ImportError:
     _INDEXER_AVAILABLE = False
 
 
+def _ts() -> str:
+    """Return a compact HH:MM:SS timestamp string for progress output, e.g. [14:23:01]."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
 class RainMemory:
     """
     Persistent memory for Rain using local SQLite.
@@ -83,6 +88,7 @@ class RainMemory:
                     content TEXT NOT NULL,
                     is_code INTEGER DEFAULT 0,
                     confidence REAL,
+                    agent_type TEXT,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
@@ -104,7 +110,9 @@ class RainMemory:
                     rating TEXT NOT NULL,
                     correction TEXT,
                     timestamp TEXT NOT NULL,
-                    query_embedding BLOB
+                    query_embedding BLOB,
+                    agent_type TEXT,
+                    confidence REAL
                 );
 
                 CREATE TABLE IF NOT EXISTS ab_results (
@@ -143,6 +151,42 @@ class RainMemory:
                 );
                 CREATE INDEX IF NOT EXISTS idx_project_index_path
                     ON project_index(project_path);
+            """)
+
+            # ── Migrate existing feedback table (add calibration columns if absent) ──
+            try:
+                conn.execute("ALTER TABLE feedback ADD COLUMN agent_type TEXT")
+            except Exception:
+                pass  # column already exists
+            try:
+                conn.execute("ALTER TABLE feedback ADD COLUMN confidence REAL")
+            except Exception:
+                pass  # column already exists
+            # ── Migrate existing messages table (add agent_type column if absent) ──
+            try:
+                conn.execute("ALTER TABLE messages ADD COLUMN agent_type TEXT")
+            except Exception:
+                pass  # column already exists
+            # ── Migrate existing feedback table (add plausibility column if absent) ──
+            try:
+                conn.execute("ALTER TABLE feedback ADD COLUMN plausibility_score REAL")
+            except Exception:
+                pass  # column already exists
+            # ── Create synthesis_log table (dual-response logging — Priority 2) ──
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS synthesis_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    query_hash TEXT NOT NULL,
+                    primary_response TEXT NOT NULL,
+                    synthesized_response TEXT NOT NULL,
+                    primary_confidence REAL,
+                    synthesis_confidence REAL,
+                    rating TEXT,
+                    timestamp TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_synthesis_log_hash
+                    ON synthesis_log(query_hash);
             """)
 
     def start_session(self, model: str):
@@ -405,13 +449,21 @@ class RainMemory:
         except Exception:
             return None
 
-    def save_message(self, role: str, content: str, is_code: bool = False, confidence: float = None):
-        """Save a single message and asynchronously embed it for semantic search."""
+    def save_message(self, role: str, content: str, is_code: bool = False,
+                     confidence: float = None, agent_type: str = None):
+        """Save a single message and asynchronously embed it for semantic search.
+
+        agent_type records which agent produced this response — used by
+        implicit feedback detection to correlate follow-up signals with the
+        correct agent for calibration purposes.
+        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, timestamp, role, content, is_code, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (self.session_id, datetime.now().isoformat(), role, content, int(is_code), confidence)
+                """INSERT INTO messages
+                       (session_id, timestamp, role, content, is_code, confidence, agent_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (self.session_id, datetime.now().isoformat(), role, content,
+                 int(is_code), confidence, agent_type)
             )
             message_id = cursor.lastrowid
 
@@ -425,13 +477,23 @@ class RainMemory:
 
     # ── Feedback / Self-Improvement (Phase 5B) ────────────────────────────
 
-    def save_feedback(self, query: str, response: str, rating: str, correction: str = None):
-        """Persist a thumbs-up/down signal (and optional correction) from the user."""
+    def save_feedback(self, query: str, response: str, rating: str,
+                      correction: str = None, agent_type: str = None,
+                      confidence: float = None):
+        """Persist a thumbs-up/down signal (and optional correction) from the user.
+
+        agent_type and confidence are recorded for calibration — over time Rain
+        learns which agents produce reliable responses and adjusts their
+        confidence scores accordingly.
+        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                """INSERT INTO feedback (session_id, query, response, rating, correction, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (self.session_id, query, response, rating, correction, datetime.now().isoformat())
+                """INSERT INTO feedback
+                       (session_id, query, response, rating, correction, timestamp,
+                        agent_type, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (self.session_id, query, response, rating, correction,
+                 datetime.now().isoformat(), agent_type, confidence)
             )
             feedback_id = cursor.lastrowid
 
@@ -442,6 +504,17 @@ class RainMemory:
             daemon=True,
         )
         t.start()
+
+        # Compute correction plausibility in background (bad ratings with corrections only)
+        # This checks whether Rain's response is consistent with its historically good answers
+        # on the same topic — if so, the correction may be a false negative (user error).
+        if rating == 'bad' and correction:
+            t2 = threading.Thread(
+                target=self._compute_and_store_plausibility,
+                args=(feedback_id, query, response),
+                daemon=True,
+            )
+            t2.start()
 
     def _store_feedback_embedding(self, feedback_id: int, query: str):
         """Embed a feedback query and persist the vector for future retrieval."""
@@ -458,16 +531,268 @@ class RainMemory:
         except Exception:
             pass
 
+    def _calculate_plausibility_score(self, query: str, response: str) -> Optional[float]:
+        """
+        Pure computation: assess how plausible a correction is by checking whether
+        Rain's response is consistent with its historically good answers on the same topic.
+
+        Returns a float in [0, 1] if enough history exists to make a judgment, or None
+        if there are no prior good-rated responses on the same topic (unknown territory).
+
+        High score (> 0.5) → Rain has been consistent here; the correction is suspicious.
+        Low score or None  → new territory; correction should be treated as authoritative.
+
+        Called synchronously before implicit-feedback calibration updates (to gate false
+        corrections) and from the background plausibility thread (to persist the score).
+        """
+        response_vec = self._embed(response[:1500])
+        if response_vec is None:
+            return None
+
+        query_vec = self._embed(query)
+        if query_vec is None:
+            return None
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    """SELECT query, response, query_embedding FROM feedback
+                       WHERE rating = 'good'
+                         AND query_embedding IS NOT NULL
+                         AND response IS NOT NULL
+                         AND response != ''
+                       ORDER BY id DESC LIMIT 100"""
+                ).fetchall()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        # Find good-rated responses on the same topic (similar query)
+        similar_responses = []
+        for fb_query, fb_response, emb_blob in rows:
+            try:
+                fb_query_vec = json.loads(emb_blob.decode("utf-8"))
+                if self._cosine_similarity(query_vec, fb_query_vec) > 0.5:
+                    similar_responses.append(fb_response)
+            except Exception:
+                pass
+
+        if not similar_responses:
+            # No history on this topic — plausibility is unknown
+            return None
+
+        # Compare Rain's current response against those good-rated responses.
+        # High similarity = Rain has been consistent with what users previously approved.
+        similarities = []
+        for resp_text in similar_responses[:10]:          # cap to avoid slow loops
+            resp_vec = self._embed(resp_text[:1500])
+            if resp_vec:
+                similarities.append(self._cosine_similarity(response_vec, resp_vec))
+
+        if not similarities:
+            return None
+
+        return round(max(similarities), 3)   # use max: one strong match is enough
+
+    def _compute_and_store_plausibility(self, feedback_id: int, query: str, response: str):
+        """
+        Assess plausibility of a user correction and persist the score to the DB.
+
+        Delegates computation to _calculate_plausibility_score(), then writes the result
+        to the feedback row so get_relevant_corrections() can annotate suspicious entries.
+
+        Runs in a background thread at correction-ingestion time.  Score is stored once
+        and read back by get_relevant_corrections() at prompt-build time.
+        """
+        plausibility = self._calculate_plausibility_score(query, response)
+        if plausibility is None:
+            return
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE feedback SET plausibility_score = ? WHERE id = ?",
+                    (plausibility, feedback_id)
+                )
+        except Exception:
+            pass
+
+    def get_session_anchor(self, session_id: str, limit: int = 3) -> List[dict]:
+        """
+        Return the first `limit` messages of the given session.
+
+        These act as an anchor — the opening messages of a session establish
+        goals, constraints, and project context that must never drift out of
+        working memory as the conversation grows past the recent-messages window.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT role, content, timestamp FROM messages
+                       WHERE session_id = ?
+                       ORDER BY id ASC LIMIT ?""",
+                    (session_id, limit)
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_calibration_factors(self) -> dict:
+        """
+        Compute per-agent confidence adjustment factors from feedback history.
+
+        For each agent type with at least 5 ratings in the last 90 days:
+          accuracy  = good_count / total_count
+          factor    = 0.7 + (accuracy * 0.6)   → [0.7 … 1.3], clamped to [0.72, 1.10]
+
+        A factor < 1.0 deflates confidence scores, making synthesis trigger more
+        often for unreliable agents.  A factor > 1.0 inflates them, letting
+        reliable agents skip reflection more frequently.
+
+        Returns an empty dict when there is not yet enough data.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    """SELECT agent_type,
+                              SUM(CASE WHEN rating = 'good' THEN 1 ELSE 0 END) AS good_count,
+                              COUNT(*) AS total_count
+                       FROM feedback
+                       WHERE agent_type IS NOT NULL
+                         AND timestamp > datetime('now', '-90 days')
+                       GROUP BY agent_type"""
+                ).fetchall()
+
+            factors = {}
+            for agent_type, good_count, total_count in rows:
+                if total_count < 5:
+                    continue  # not enough data to calibrate yet
+                accuracy = good_count / total_count
+                raw = 0.7 + (accuracy * 0.6)
+                factors[agent_type] = round(max(0.72, min(1.10, raw)), 3)
+            return factors
+        except Exception:
+            return {}
+
+    def log_synthesis(self, query_hash: str, primary_response: str,
+                      synthesized_response: str, primary_confidence: float,
+                      synthesis_confidence: float) -> int:
+        """
+        Record both the primary and synthesized response for a query.
+
+        Returns the synthesis_log row ID.  Over time this table reveals whether
+        the synthesizer is actually improving responses or just adding latency.
+        Call update_synthesis_rating() when the user provides feedback so the
+        rating can be attached retroactively.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT INTO synthesis_log
+                           (session_id, query_hash, primary_response, synthesized_response,
+                            primary_confidence, synthesis_confidence, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (self.session_id, query_hash,
+                     primary_response[:3000], synthesized_response[:3000],
+                     primary_confidence, synthesis_confidence,
+                     datetime.now().isoformat())
+                )
+                return cursor.lastrowid
+        except Exception:
+            return -1
+
+    def update_synthesis_rating(self, query_hash: str, rating: str):
+        """
+        Attach a user rating to the most recent synthesis_log entry for this query.
+        Called by the feedback endpoint after the user submits thumbs-up/down so
+        we can track whether synthesis improved or degraded the final response.
+
+        Two-stage match:
+          1. Primary   — exact query_hash match (precise, works when the query
+                         the UI sends is identical to what was hashed at synthesis time)
+          2. Fallback  — most recent unrated entry in the current session
+                         (handles cases where context injection caused the hash to
+                         diverge between synthesis time and feedback time)
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """UPDATE synthesis_log SET rating = ?
+                       WHERE query_hash = ?
+                         AND id = (SELECT MAX(id) FROM synthesis_log
+                                   WHERE query_hash = ?)""",
+                    (rating, query_hash, query_hash)
+                )
+                if cursor.rowcount == 0:
+                    # Hash didn't match — fall back to the most recent unrated
+                    # synthesis entry for this session so ratings are never lost.
+                    conn.execute(
+                        """UPDATE synthesis_log SET rating = ?
+                           WHERE session_id = ?
+                             AND rating IS NULL
+                             AND id = (SELECT MAX(id) FROM synthesis_log
+                                       WHERE session_id = ? AND rating IS NULL)""",
+                        (rating, self.session_id, self.session_id)
+                    )
+        except Exception:
+            pass
+
+    def get_synthesis_accuracy(self) -> dict:
+        """
+        Return synthesis effectiveness stats for the agent roster display.
+
+        Returns a dict with:
+          total                       — all synthesis runs recorded
+          rated                       — runs with user feedback attached
+          improved                    — runs rated 'good' by the user
+          improvement_rate            — good / rated  (0.0 when no ratings yet)
+          confidence_improved         — runs where synthesis_confidence > primary_confidence
+          confidence_improvement_rate — confidence_improved / total
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM synthesis_log"
+                ).fetchone()[0]
+                rated = conn.execute(
+                    "SELECT COUNT(*) FROM synthesis_log WHERE rating IS NOT NULL"
+                ).fetchone()[0]
+                improved = conn.execute(
+                    "SELECT COUNT(*) FROM synthesis_log WHERE rating = 'good'"
+                ).fetchone()[0]
+                conf_improved = conn.execute(
+                    """SELECT COUNT(*) FROM synthesis_log
+                       WHERE synthesis_confidence > primary_confidence"""
+                ).fetchone()[0]
+            return {
+                'total': total,
+                'rated': rated,
+                'improved': improved,
+                'improvement_rate': round(improved / rated, 3) if rated > 0 else 0.0,
+                'confidence_improved': conf_improved,
+                'confidence_improvement_rate': round(conf_improved / total, 3) if total > 0 else 0.0,
+            }
+        except Exception:
+            return {}
+
     def get_relevant_corrections(self, query: str, limit: int = 3) -> List[dict]:
         """
         Find past corrections that are semantically relevant to the current query.
         Only returns 'bad'-rated feedback that has a user-supplied correction.
         Uses cosine similarity on embedded queries; falls back to recency if
         embeddings are unavailable.
+
+        Corrections with plausibility_score > 0.5 are prefixed with
+        [LOW CONFIDENCE CORRECTION] — Rain gave a similar answer before and users
+        liked it, so this correction may be a false negative (user error rather
+        than Rain error).  The prefix signals the model to treat the correction
+        with caution rather than accepting it as authoritative.
         """
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                """SELECT id, query, response, correction, query_embedding
+                """SELECT id, query, response, correction, query_embedding, plausibility_score
                    FROM feedback
                    WHERE rating = 'bad' AND correction IS NOT NULL AND correction != ''
                    ORDER BY id DESC LIMIT 50"""
@@ -476,32 +801,45 @@ class RainMemory:
         if not rows:
             return []
 
+        def _annotate(correction_text: str, plausibility) -> str:
+            """Prefix suspicious corrections so the model treats them with caution."""
+            if plausibility is not None and plausibility > 0.5:
+                return f"[LOW CONFIDENCE CORRECTION — Rain has given consistent answers on this topic before; verify before accepting] {correction_text}"
+            return correction_text
+
         query_vec = self._embed(query)
         if query_vec is None:
             # No embedding available — return most recent corrections
             return [
-                {"query": r[1], "response": r[2], "correction": r[3]}
+                {"query": r[1], "response": r[2], "correction": _annotate(r[3], r[5])}
                 for r in rows[:limit]
             ]
 
         scored = []
         for row in rows:
-            _, fb_query, fb_response, fb_correction, emb_blob = row
+            _, fb_query, fb_response, fb_correction, emb_blob, fb_plausibility = row
             if emb_blob:
                 try:
                     fb_vec = json.loads(emb_blob.decode("utf-8"))
                     sim = self._cosine_similarity(query_vec, fb_vec)
-                    scored.append((sim, fb_query, fb_response, fb_correction))
+                    scored.append((sim, fb_query, fb_response, fb_correction, fb_plausibility))
                 except Exception:
                     pass
 
         scored.sort(key=lambda x: x[0], reverse=True)
         # Only inject corrections with meaningful similarity (>0.5)
-        return [
-            {"query": q, "response": r, "correction": c, "similarity": round(s, 2)}
-            for s, q, r, c in scored[:limit]
-            if s > 0.5
-        ]
+        results = []
+        for item in scored[:limit]:
+            if item[0] > 0.5:
+                s, q, r, c, plausibility = item
+                results.append({
+                    "query": q,
+                    "response": r,
+                    "correction": _annotate(c, plausibility),
+                    "similarity": round(s, 2),
+                    "plausibility": plausibility,
+                })
+        return results
 
     # ── Semantic Memory (Phase 5A) ─────────────────────────────────────────
 
@@ -964,6 +1302,12 @@ When asked to implement, edit, refactor, or fix something in the codebase:
    - State what will be lost or changed permanently
    - Ask for confirmation if the change is large or irreversible
 
+IMPORTANT: For simple code generation — the user asked you to write a function,
+explain code, or create a standalone script with no existing files to read or
+modify — skip ALL planning steps and tool documentation below. Just write the
+code directly. The planning workflow and tool syntax are ONLY for multi-step
+codebase tasks where you must inspect existing files before writing.
+
 Tool syntax (use these when in task execution mode):
   [TOOL: read_file server.py]
   [TOOL: read_file rain.py 2400 2500]        ← start/end lines for large files
@@ -1007,7 +1351,23 @@ Your strengths:
 - Debugging reasoning errors, not just code errors
 - Evaluating tradeoffs honestly
 
+── CONVERSATIONAL / CONCEPTUAL QUESTIONS ───────────────────────────────────
+
+For philosophical, abstract, conceptual, or simple factual questions — where
+no files need to be read, no code needs to be written, and no multi-step task
+needs to be executed — answer directly in natural prose. Skip everything below
+this line. Use 1–3 clear paragraphs. No headers. No tables. No numbered
+sections. No bullet points unless the question genuinely calls for a list.
+Match the weight of your answer to the weight of the question: a 2-sentence
+question gets a 2–4 sentence answer, not a structured document.
+
+──────────────────────────────────────────────────────────────────────────────
+
 ── TASK PLANNING PATTERN ────────────────────────────────────────────────────
+
+Use this section ONLY for multi-step tasks that require reading files,
+executing code, writing to disk, or coordinating several dependent actions.
+Do NOT use this for conceptual, philosophical, or factual questions.
 
 When given a complex or multi-step goal, decompose it before acting:
 
@@ -1049,7 +1409,7 @@ Tool syntax (use in task execution mode):
 Reasoning rules:
 - Think step by step. Show your reasoning, not just your conclusion.
 - When uncertain, say so explicitly rather than guessing confidently
-- Prefer structured responses: numbered steps, clear sections
+- For task planning: use numbered steps and clear sections. For conceptual questions: use prose.
 - Challenge the premise if it's flawed
 - A plan that identifies what you don't yet know is more valuable than a confident
   plan built on assumptions. Say 'I need to read X before I can plan step 3.'""",
@@ -1209,21 +1569,124 @@ Rules:
 - NEVER start with "Based on the search results..." — just answer directly with citations inline.""",
 }
 
+# ── Auto-detect best available model ──────────────────────────────────────────
+
+# Priority order for auto-picking the default model.
+# Checked by exact base-name match (everything before ':').
+_DEFAULT_MODEL_PRIORITY = [
+    'qwen3.5',    # qwen3.5 series — newest qwen generation
+    'qwen3',      # qwen3 series — strong reasoning and agent tasks
+    'llama3.2',
+    'llama3.1',
+    'mistral',
+    'qwen2.5',
+    'qwen2',
+    'gemma3',
+    'gemma2',
+    'phi4',
+    'phi3',
+]
+
+# Model name fragments that indicate an embedding / non-chat model to skip.
+_EMBED_MODEL_FRAGMENTS = ('embed', 'nomic', 'minilm', 'bge-', 'gte-', 'e5-')
+
+
+def auto_pick_default_model() -> str:
+    """
+    Query `ollama list` and return the best available chat model.
+
+    Selection rules:
+    1. Skip known embedding / non-chat models.
+    2. Walk _DEFAULT_MODEL_PRIORITY and return the first installed match
+       (exact base-name comparison, so 'qwen3.5:9b' matches 'qwen3.5' but
+       NOT 'qwen3' — this avoids the old startswith() false-positive bug).
+    3. If nothing in the priority list is installed, return the first
+       non-embedding model that is installed.
+    4. Hard-fall-back to 'llama3.1' if Ollama is unreachable.
+    """
+    try:
+        result = subprocess.run(
+            ['ollama', 'list'], capture_output=True, text=True, check=True
+        )
+        installed = []
+        for line in result.stdout.strip().split('\n')[1:]:  # skip header row
+            if line.strip():
+                name = line.split()[0]  # first column is NAME
+                base = name.split(':')[0].lower()
+                if not any(frag in base for frag in _EMBED_MODEL_FRAGMENTS):
+                    installed.append(name)
+
+        if not installed:
+            return 'llama3.1'
+
+        # Walk priority list — exact base-name match
+        for preferred in _DEFAULT_MODEL_PRIORITY:
+            for model in installed:
+                if model.split(':')[0].lower() == preferred.lower():
+                    return model
+
+        # Nothing in priority list found — use whatever is installed first
+        return installed[0]
+
+    except Exception:
+        return 'llama3.1'
+
+
+# ── Implicit feedback signal detection ────────────────────────────────────────
+# These phrase lists let Rain detect approval or disapproval from the user's
+# next message without requiring an explicit thumbs-up / thumbs-down rating.
+# Only short messages (≤ 50 words) are scanned to keep false-positive rates low.
+
+_IMPLICIT_NEG_SIGNALS = [
+    "are you sure", "are you certain", "you sure about that",
+    "that's wrong", "that's incorrect", "that's not right", "that's not correct",
+    "that doesn't seem right", "that doesn't look right", "that seems wrong",
+    "that seems off", "that looks off",
+    "can you redo", "redo that", "try again", "do it again", "do that again",
+    "start over", "try that again",
+    "that's not what i asked", "that's not what i wanted", "you misunderstood",
+    "not quite right", "that's off", "that was wrong", "that was incorrect",
+    "you were wrong", "you're wrong",
+    "you hallucinated", "you made that up", "that's made up", "that's fabricated",
+    "that doesn't work", "it doesn't work", "that won't work", "doesn't work",
+    "fix that", "correct that", "that needs fixing",
+    "no that's not", "that's not it", "nope", "wrong",
+    "that's not right", "not right", "still wrong", "still not right",
+    "incorrect", "not correct",
+]
+
+_IMPLICIT_POS_SIGNALS = [
+    "perfect", "exactly", "that's exactly", "exactly right", "exactly what i",
+    "that's right", "that's correct", "you're right", "correct",
+    "great answer", "great job", "well done", "nicely done", "good answer",
+    "that works", "it works", "works perfectly", "that worked",
+    "thank you", "thanks", "that helped", "very helpful", "super helpful",
+    "that's what i needed", "that's what i was looking for", "that's perfect",
+    "good job", "nice work", "nailed it", "spot on",
+    "yes that's", "yes exactly", "yep that", "yep exactly",
+    "that's it", "that's the one", "love it", "brilliant",
+]
+
 # ── Preferred models per agent (falls back to default if not installed) ─
 
 AGENT_PREFERRED_MODELS = {
     # Code-focused agents: qwen2.5-coder:7b is the primary — purpose-built for code.
-    # qwen3:8b added as first fallback: strong at agent/tool tasks and coding.
+    # qwen3.5 / qwen3:8b are strong fallbacks for agent + reasoning tasks.
     # codestral (22B/12GB) kept further down — cold-loads past the 300s timeout
     # on machines where it isn't already warm in memory.
-    AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3:8b', 'qwen3:4b', 'codestral', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
-    # General reasoning agents: qwen3:8b leads — explicitly trained for agent tasks,
-    # 128K context, outperforms llama3.2 on reasoning. llama3.2 stays as fallback.
-    AgentType.LOGIC:       ['qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.DOMAIN:      ['qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.REFLECTION:  ['qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.SYNTHESIZER: ['qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.GENERAL:     ['qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codestral', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
+    # General reasoning agents: qwen3.5 leads where installed, then qwen3:8b.
+    # Both are explicitly trained for agent tasks with 128K context.
+    AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    # Reflection is a critic/rater, NOT an answerer — a small fast model is ideal.
+    # llama3.2 (2 GB) handles "list issues + rate EXCELLENT/GOOD/NEEDS_IMPROVEMENT/POOR"
+    # in ~30s vs 3+ minutes for a 9B model.  Bigger models add latency, not quality here.
+    AgentType.REFLECTION:  ['llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
+    # Synthesizer writes the final user-facing answer — needs a capable model, but
+    # qwen3:8b (5.2 GB) is meaningfully faster than qwen3.5:9b (6.6 GB) for this task.
+    AgentType.SYNTHESIZER: ['qwen3:8b', 'qwen3:4b', 'qwen3.5:9b', 'qwen3.5:8b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
     AgentType.SEARCH:      ['llama3.2', 'llama3.1', 'mistral:7b'],
 }
 
@@ -1450,6 +1913,16 @@ class AgentRouter:
         'tradeoff', 'should i', 'what is the best', 'recommend',
         'architecture', 'approach', 'think through', 'help me understand',
         'what would happen', 'evaluate', 'assess',
+        # Abstract / philosophical question starters — these should always
+        # route to LOGIC, never accidentally fall to DEV on a keyword tie.
+        'how would', 'how would you', 'what makes', 'what should',
+        'what is the', 'what are the', 'what is a', 'what is an',
+        'most dangerous', 'most important', 'most common', 'most effective',
+        'assumption', 'reliability', 'trade-off', 'implications', 'consequences',
+        # Correction challenges — factual disputes are always a reasoning matter
+        # and must route to LOGIC, not fall through to GENERAL.
+        'actually', "you're wrong", "that's wrong", "that's incorrect",
+        "that is wrong", "that is incorrect",
     ]
 
     # Phase 6: keywords that suggest the user wants Rain to *act*, not just answer.
@@ -1461,6 +1934,40 @@ class AgentRouter:
         'step by step', 'implement a', 'develop a', 'build a system',
         'restructure', 'rewrite the', 'redesign', 'deploy', 'convert all',
         'create a script that', 'write a script that', 'make a tool that',
+    ]
+
+    # ReAct keywords — phrases that signal the answer requires *discovering* information
+    # by inspecting the real world (filesystem, git, logs, running processes) rather
+    # than reasoning about knowledge the model already has.
+    # These are intentionally specific multi-word phrases to avoid false positives on
+    # innocent uses of "find" or "check" in knowledge questions.
+    REACT_KEYWORDS = [
+        # Filesystem discovery
+        'list files', 'list the files', 'list all files', 'what files', 'which files',
+        'find files', 'find all files', 'show me the files', 'show the files',
+        'read the file', 'open the file', 'show the contents', 'show contents of',
+        "what's in the file", 'what is in the file', 'contents of the file',
+        'look in the directory', 'look in the folder', 'what is in the directory',
+        # Codebase search / discovery
+        'find all', 'find where', 'where is the function', 'where is the class',
+        'which file contains', 'which file has', 'what file has', 'what file contains',
+        'grep for', 'search the codebase', 'find the function', 'find the class',
+        'find the method', 'find all todo', 'find all fixme', 'find all occurrences',
+        'find all instances', 'search for it in',
+        # Git inspection
+        'git log', 'git status', 'git diff', 'git branch',
+        'recent commits', 'last commit', 'what was committed', 'commit history',
+        'show the diff', 'what changed',
+        # Log / output reading
+        'check the log', 'read the log', 'show the log', 'tail the log',
+        "what's in the log", 'what is in the log', 'look at the log',
+        # Current system / process state
+        "what's running", 'what is running', 'current state of', 'current status of',
+        'is the server running', 'is the service', 'does the file exist',
+        'is there a file', 'check if the file',
+        # Verification via real execution
+        'run and check', 'test whether it', 'verify that it works',
+        'check if it works', 'does it work', 'is it working', 'run the tests',
     ]
 
     # Phase 7: keywords that indicate the user wants real-time / live information.
@@ -1501,17 +2008,49 @@ class AgentRouter:
         if self._contains_code(query):
             code_score += 3
 
-        # Tiebreaker: code > domain > reasoning > general
+        # DEV requires clear plurality OR an explicit code imperative at the
+        # start of the sentence.  A single ambiguous code keyword ('test',
+        # 'function', 'class', 'algorithm') in a conceptual or design question
+        # must NOT beat a reasoning signal — that's the mis-route we're fixing.
+        #
+        # _code_leading  — code score strictly exceeds both other scores
+        # _code_explicit — query opens with a direct imperative code verb
+        #                  ("write a ...", "implement ...", "debug this ...")
+        #                  OR actual code syntax is present in the query body
+        _CODE_IMPERATIVES = (
+            'write ', 'code ', 'implement ', 'debug ', 'fix ', 'refactor ',
+            'build ', 'create ', 'develop ', 'deploy ', 'compile ', 'generate ',
+        )
+        _code_leading  = code_score > max(domain_score, reasoning_score)
+        _code_explicit = (
+            self._contains_code(query)
+            or any(query_lower.startswith(v) for v in _CODE_IMPERATIVES)
+        )
+        _code_wins = _code_leading or (code_score >= 1 and _code_explicit)
+
         best = max(code_score, domain_score, reasoning_score)
         if best == 0:
             return AgentType.GENERAL
-        if code_score == best:
+        if _code_wins and code_score == best:
             return AgentType.DEV
         if domain_score == best:
             return AgentType.DOMAIN
         if reasoning_score == best:
             return AgentType.LOGIC
-        return AgentType.GENERAL
+        # Fallthrough: code matched but lost tie-breaking rules → reason about it
+        return AgentType.LOGIC
+
+    def should_use_react(self, query: str) -> bool:
+        """
+        Return True if the query requires the ReAct loop to discover information
+        from the real world — filesystem, git, logs, running processes — rather
+        than reasoning about knowledge the model already has.
+
+        Unlike is_complex_task (which needs 2+ hits), a single clear REACT_KEYWORD
+        phrase is enough because each phrase is already specific and multi-word.
+        """
+        q = query.lower()
+        return any(kw in q for kw in self.REACT_KEYWORDS)
 
     def is_complex_task(self, query: str) -> bool:
         """
@@ -1525,6 +2064,13 @@ class AgentRouter:
         q = query.lower()
         hits = sum(1 for kw in self.TASK_KEYWORDS if kw in q)
         return hits >= 2 or (hits >= 1 and len(query.split()) > 40)
+
+    def explain_mode(self, mode: str) -> str:
+        """Human-readable label for the execution mode chosen by _auto_mode."""
+        return {
+            'react':   'ReAct loop (discovery query detected)',
+            'reflect': 'recursive reflect',
+        }.get(mode, mode)
 
     def _contains_code(self, text: str) -> bool:
         """Check if the query itself contains code, not just asks about it."""
@@ -2002,7 +2548,7 @@ Improved Response:"""
                 return False
 
             if _is_long_running(code):
-                print(f"\n⏱️  Long-running script detected ({block_label}) — skipping sandbox")
+                print(f"\n{_ts()} ⏱️  Long-running script detected ({block_label}) — skipping sandbox")
                 final_results.append(SandboxResult(
                     success=False, stdout='', stderr='long-running',
                     return_code=-1, language=lang,
@@ -2011,12 +2557,12 @@ Improved Response:"""
                 ))
                 continue
 
-            print(f"\n🔬 Testing suggested code ({block_label}, {lang})...")
+            print(f"\n{_ts()} 🔬 Testing suggested code ({block_label}, {lang})...")
 
             result = self.sandbox.run(code, language=lang)
 
             if result.success:
-                print(f"✅ Code verified — runs successfully ({result.duration_seconds:.2f}s)")
+                print(f"{_ts()} ✅ Code verified — runs successfully ({result.duration_seconds:.2f}s)")
                 if result.stdout.strip() and verbose:
                     print(f"   Output: {result.stdout.strip()[:200]}")
                 final_results.append(result)
@@ -2030,24 +2576,24 @@ Improved Response:"""
                 final_results.append(result)
                 continue
 
-            print(f"❌ {result.error_message}")
+            print(f"{_ts()} ❌ {result.error_message}")
             current_code = code
             current_result = result
             corrections_made = 0
 
             for attempt in range(1, 4):
-                print(f"🔄 Correcting... (attempt {attempt})")
+                print(f"{_ts()} 🔄 Correcting... (attempt {attempt})")
                 correction_prompt = self._create_sandbox_correction_prompt(
                     original_query, current_code, current_result, attempt
                 )
                 corrected_response = self._query_model(correction_prompt)
                 if not corrected_response:
-                    print("⚠️  No correction response — giving up on this block")
+                    print(f"{_ts()} ⚠️  No correction response — giving up on this block")
                     break
 
                 new_blocks = self.sandbox.extract_code_blocks(corrected_response)
                 if not new_blocks:
-                    print("⚠️  Correction contained no code block — giving up")
+                    print(f"{_ts()} ⚠️  Correction contained no code block — giving up")
                     break
 
                 new_lang, new_code = new_blocks[0]
@@ -2056,18 +2602,18 @@ Improved Response:"""
 
                 if new_result.success:
                     note = f" (corrected in {corrections_made} attempt{'s' if corrections_made != 1 else ''})"
-                    print(f"✅ Code verified — runs successfully ({new_result.duration_seconds:.2f}s){note}")
+                    print(f"{_ts()} ✅ Code verified — runs successfully ({new_result.duration_seconds:.2f}s){note}")
                     if new_result.stdout.strip() and verbose:
                         print(f"   Output: {new_result.stdout.strip()[:200]}")
                     current_response = corrected_response
                     final_results.append(new_result)
                     break
                 else:
-                    print(f"❌ {new_result.error_message}")
+                    print(f"{_ts()} ❌ {new_result.error_message}")
                     current_code = new_code
                     current_result = new_result
             else:
-                print("⚠️  Max correction attempts reached — returning best effort")
+                print(f"{_ts()} ⚠️  Max correction attempts reached — returning best effort")
                 final_results.append(current_result)  # record the final failed state
 
         return current_response, final_results
@@ -2182,7 +2728,7 @@ Improved Response:"""
                 print(f"\n💭 Initial Response (confidence: {current_confidence:.2f}):")
                 print(f"{current_response}\n")
             else:
-                print(f"💭 Thinking... (initial confidence: {current_confidence:.2f})")
+                print(f"{_ts()} 💭 Thinking... (initial confidence: {current_confidence:.2f})")
 
             # Recursive reflection loop
             for iteration in range(1, self.max_iterations + 1):
@@ -2196,7 +2742,7 @@ Improved Response:"""
                 if verbose:
                     print(f"🔄 Reflection iteration {iteration}...")
                 else:
-                    print(f"🔄 Reflecting... (iteration {iteration})")
+                    print(f"{_ts()} 🔄 Reflecting... (iteration {iteration})")
 
                 # Create reflection prompt
                 reflection_prompt = self._create_reflection_prompt(
@@ -2232,7 +2778,7 @@ Improved Response:"""
                     if verbose:
                         print("⚡ No improvement, keeping previous response")
                     else:
-                        print("⚡ Reflection complete")
+                        print(f"{_ts()} ⚡ Reflection complete")
                     break
 
         except KeyboardInterrupt:
@@ -2307,11 +2853,12 @@ class MultiAgentOrchestrator:
     This is not a feature flag. This is what Rain is.
     """
 
-    def __init__(self, default_model: str = "llama3.1", max_iterations: int = 3,
+    def __init__(self, default_model: Optional[str] = None, max_iterations: int = 3,
                  confidence_threshold: float = 0.8, system_prompt: str = None,
                  memory: RainMemory = None, sandbox_enabled: bool = False,
                  sandbox_timeout: int = 10):
-        self.default_model = default_model
+        # Auto-detect the best available model when none is explicitly specified.
+        self.default_model = default_model or auto_pick_default_model()
         self.max_iterations = max_iterations
         self.confidence_threshold = confidence_threshold
         self.memory = memory
@@ -2325,6 +2872,12 @@ class MultiAgentOrchestrator:
         self._last_vision_desc: Optional[str] = None  # set by _query_agent when vision runs
         self._session_image_b64: Optional[str] = None  # last image uploaded this session
         self._session_vision_desc: Optional[str] = None  # description of last image this session
+        # Active project path — set by --project flag or per-request in the server.
+        # Used by _build_memory_context to proactively query the knowledge graph.
+        self.project_path: Optional[str] = None
+        # Per-agent confidence adjustment factors loaded from feedback history.
+        # Empty until enough feedback has accumulated (min 5 ratings per agent).
+        self._calibration_factors: Dict[str, float] = {}
 
         # Check Ollama
         if not self._check_ollama():
@@ -2353,6 +2906,16 @@ class MultiAgentOrchestrator:
                     print(f"🧰 {self.skill_loader.count} skill(s) loaded from {SkillLoader.GLOBAL_SKILLS_DIR}")
             except Exception:
                 self.skill_loader = None
+
+        # Confidence calibration — load adjustment factors from feedback history.
+        # Runs after memory is set so the DB is reachable.
+        if self.memory:
+            try:
+                self._calibration_factors = self.memory.get_calibration_factors()
+                if self._calibration_factors:
+                    print(f"📊 Calibration loaded: {len(self._calibration_factors)} agent(s) have historical accuracy data")
+            except Exception:
+                pass
 
         # Phase 6: Tool registry — file ops, shell, git, with audit log.
         # confirm_fn is None here (auto-approve); the CLI sets it to interactive_confirm.
@@ -2393,20 +2956,27 @@ class MultiAgentOrchestrator:
         automatically preferred for primary agent types — this is the payoff of
         Phase 5B.  Reflection and Synthesizer always use the base model so their
         critiques are unbiased by the fine-tuning.
+
+        Matching uses exact base-name comparison (everything before ':') so that,
+        e.g., 'qwen3.5:9b' matches preferred entry 'qwen3.5:9b' but does NOT
+        accidentally match 'qwen3:8b' — the old startswith() check caused this
+        false-positive because 'qwen3.5'.startswith('qwen3') is True.
         """
         TUNED_MODEL = "rain-tuned"
         PRIMARY_TYPES = {AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN, AgentType.GENERAL}
 
         # Prefer rain-tuned for primary agents if it exists
         if agent_type in PRIMARY_TYPES:
-            if any(m.startswith(TUNED_MODEL) for m in self._installed_models):
+            if any(m.split(':')[0] == TUNED_MODEL for m in self._installed_models):
                 return TUNED_MODEL
 
         preferred = AGENT_PREFERRED_MODELS.get(agent_type, [self.default_model])
         for model in preferred:
-            # Match by prefix so 'llama3.1' matches 'llama3.1:latest'
+            pref_base = model.split(':')[0]
             for installed in self._installed_models:
-                if installed.startswith(model.split(':')[0]):
+                # Exact base-name match: 'llama3.1' matches 'llama3.1:latest',
+                # but 'qwen3' does NOT match 'qwen3.5:9b'.
+                if installed.split(':')[0] == pref_base:
                     return installed
         return self.default_model
 
@@ -2422,6 +2992,125 @@ class MultiAgentOrchestrator:
                 description=self.router.explain(agent_type),
             )
         return agents
+
+    def _auto_mode(self, query: str, image_b64: str = None) -> str:
+        """
+        Decide which execution pipeline to use for this query.
+
+        Priority:
+          1. 'react'   — query signals real-world discovery AND tools are loaded
+                         AND no image is attached (react_loop has no vision path)
+          2. 'reflect' — everything else (knowledge, code generation, vision, etc.)
+
+        The caller is still free to override this by passing --react or --task
+        explicitly on the CLI.  _auto_mode is only consulted when no explicit
+        flag is set.
+        """
+        if image_b64:
+            # Vision queries always go through recursive_reflect — react_loop
+            # has no image_b64 parameter.
+            return 'reflect'
+
+        if self.tools and self.router.should_use_react(query):
+            return 'react'
+
+        return 'reflect'
+
+    def _detect_implicit_feedback(self, query: str) -> Optional[str]:
+        """
+        Scan the current user message for implicit feedback signals about
+        the previous assistant response.
+
+        Returns 'good', 'bad', or None.
+
+        Only fires on short messages (≤ 50 words) to avoid false positives
+        on longer technical queries that happen to contain signal phrases
+        mid-sentence.  Negative signals are checked at any position in the
+        message; positive signals require the message to be ≤ 20 words so
+        that a "thanks, now can you…" prefix doesn't flood the calibration
+        log with spurious good ratings.
+        """
+        q = query.lower().strip()
+        word_count = len(q.split())
+
+        if word_count > 50:
+            return None
+
+        for signal in _IMPLICIT_NEG_SIGNALS:
+            if signal in q:
+                return 'bad'
+
+        # Positive signals only fire when the message is short AND the signal
+        # appears at the very start — this prevents "thanks, now can you explain…"
+        # from being logged as positive feedback when it's really just a preamble.
+        if word_count <= 10:
+            for signal in _IMPLICIT_POS_SIGNALS:
+                if q.startswith(signal) or q.lstrip("!.,? ").startswith(signal):
+                    return 'good'
+
+        return None
+
+    def _auto_log_implicit_feedback(self, rating: str, triggering_query: str) -> bool:
+        """
+        Look up the most recent assistant message in the current session and
+        log implicit feedback against it.
+
+        Reads agent_type and confidence directly from the messages table so
+        the calibration log is as rich as explicit user ratings.
+        Returns True if feedback was successfully persisted.
+
+        For bad ratings: runs a synchronous plausibility check before writing.
+        If Rain has been consistently correct on this topic (plausibility > 0.5),
+        the negative signal is suppressed — a false correction (e.g. during a
+        sycophancy test) must not corrupt calibration.
+        """
+        if not self.memory:
+            return False
+        try:
+            with sqlite3.connect(self.memory.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """SELECT content, confidence, agent_type FROM messages
+                       WHERE session_id = ? AND role = 'assistant'
+                       ORDER BY id DESC LIMIT 1""",
+                    (self.memory.session_id,)
+                ).fetchone()
+
+            if not row:
+                return False
+
+            # Plausibility gate: before writing a bad calibration signal, check
+            # whether Rain's last response is consistent with its historically
+            # good answers on the same topic.  If it is, the "correction" is
+            # likely a false negative (user error or sycophancy test) — skip it.
+            if rating == 'bad':
+                plausibility = self.memory._calculate_plausibility_score(
+                    triggering_query, row["content"][:1500]
+                )
+                if plausibility is not None and plausibility > 0.5:
+                    print(
+                        f"⚠️  Implicit negative feedback suppressed — "
+                        f"plausibility {plausibility:.2f} > 0.5 "
+                        f"(Rain has been consistent here; correction looks suspicious)",
+                        flush=True,
+                    )
+                    return False
+
+            self.memory.save_feedback(
+                query=triggering_query,
+                response=row["content"][:500],   # cap to avoid huge DB entries
+                rating=rating,
+                agent_type=row["agent_type"],
+                confidence=row["confidence"],
+            )
+
+            # Refresh calibration factors immediately so the current session
+            # benefits from the new data point without waiting for a restart.
+            self._calibration_factors = self.memory.get_calibration_factors()
+            return True
+
+        except Exception:
+            return False
 
     def _best_vision_model(self) -> Optional[str]:
         """Return the best installed vision-capable model, or None if none found."""
@@ -2441,6 +3130,20 @@ class MultiAgentOrchestrator:
             print(f"   {agent.description:<40} → {agent.model_name}{tag}")
         print(f"   {'Reflection Agent':<40} → {self.agents[AgentType.REFLECTION].model_name} (always on)")
         print(f"   {'Synthesizer':<40} → {self.agents[AgentType.SYNTHESIZER].model_name} (fires on low quality)")
+        if self.memory:
+            try:
+                stats = self.memory.get_synthesis_accuracy()
+                total = stats.get('total', 0)
+                rated = stats.get('rated', 0)
+                if total > 0:
+                    if rated > 0:
+                        rate = stats.get('improvement_rate', 0)
+                        ci_rate = stats.get('confidence_improvement_rate', 0)
+                        print(f"   {'  └─ synthesis accuracy':<40} → {rate:.0%} good ratings ({rated} rated), {ci_rate:.0%} confidence gain")
+                    else:
+                        print(f"   {'  └─ synthesis runs':<40} → {total} total (no feedback yet — use 👍/👎 to track quality)")
+            except Exception:
+                pass
 
         # Suggest better models if only default is available
         missing = []
@@ -2552,12 +3255,122 @@ class MultiAgentOrchestrator:
                     context += f"     Rain said: \"{c['response'][:250]}...\"\n"
                     context += f"  ✅ Correct: \"{c['correction'][:300]}\"\n\n"
 
+        # ── Tier 2.5: Session anchor ───────────────────────────────────
+        # As sessions grow past 18 messages, the opening messages (which establish
+        # goals, constraints, and project context) drift out of the 20-message
+        # working memory window.  Pin them so they always survive.
+        if recent and len(recent) >= 18:
+            anchor_msgs = self.memory.get_session_anchor(self.memory.session_id, limit=3)
+            recent_contents = {m["content"] for m in recent}
+            pinned = [m for m in anchor_msgs if m["content"] not in recent_contents]
+            if pinned:
+                context += "\n\nSession anchor (opening context — pinned goals/constraints):\n"
+                for msg in pinned:
+                    role = "You" if msg["role"] == "user" else "Rain"
+                    content = msg["content"][:600] + ("..." if len(msg["content"]) > 600 else "")
+                    context += f"{role}: {content}\n"
+
         # ── Tier 5: Persistent user profile + session facts (Phase 7) ──
         fact_ctx = self.memory.get_fact_context()
         if fact_ctx:
             context += fact_ctx
 
+        # ── Tier 6: Knowledge graph (Phase 10 — proactive) ────────────
+        # If a project is active, extract identifiers from the query and look
+        # them up in the structural knowledge graph — injecting function/class
+        # context the model might not have seen in its training data.
+        if query and self.project_path:
+            kg_ctx = self._query_kg_context(query)
+            if kg_ctx:
+                context += kg_ctx
+
         return context
+
+    def _query_kg_context(self, query: str) -> str:
+        """
+        Proactively query the knowledge graph for structural context relevant
+        to the current query.
+
+        Extracts identifiers (CamelCase, snake_case, camelCase) from the query,
+        looks them up in the KG, and returns a compact context block listing
+        matching functions/classes and their file locations.
+
+        Falls back to the stored project summary if no specific nodes match.
+        Silently returns '' if the KG is unavailable or the project hasn't been
+        indexed yet — this is an enhancement, never a hard requirement.
+        """
+        if not self.project_path:
+            return ""
+        try:
+            from knowledge_graph import KnowledgeGraph
+            kg = KnowledgeGraph()
+
+            # Extract likely code identifiers from the query
+            identifiers = re.findall(
+                r'\b([A-Z][a-zA-Z]{2,}|[a-z]{2,}(?:_[a-z]+){1,}|[a-z]{3,}[A-Z][a-zA-Z]+)\b',
+                query
+            )
+            identifiers = list(dict.fromkeys(identifiers))[:6]  # dedupe, cap at 6
+
+            nodes_found = []
+            for name in identifiers:
+                nodes = kg.find_nodes(self.project_path, name=name)
+                if nodes:
+                    nodes_found.extend(nodes[:2])  # max 2 hits per identifier
+
+            if not nodes_found:
+                # No specific nodes — inject the project summary as fallback
+                summary = kg.get_project_summary(self.project_path)
+                if summary:
+                    return (
+                        f"\n\nProject knowledge (knowledge graph summary):\n"
+                        f"{summary[:600]}\n"
+                    )
+                return ""
+
+            ctx = "\n\nRelevant code structure (from knowledge graph):\n"
+            seen: set = set()
+            for node in nodes_found[:8]:
+                key = f"{node.get('type', '')}:{node.get('name', '')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                file_label = Path(node.get('file_path', '')).name if node.get('file_path') else ''
+                ctx += f"  {node.get('type', 'symbol')}: {node.get('name', '')} [{file_label}]\n"
+            return ctx
+
+        except Exception:
+            return ""
+
+    def _build_runtime_context(self, agent: Agent) -> str:
+        """Inject factual self-knowledge into every agent's system prompt.
+
+        Without this, agents have no grounded facts about their own model name
+        and will hallucinate a corporate confidentiality policy when asked.
+        The injected block gives the model a verifiable anchor to answer from.
+        """
+        try:
+            role_label = agent.agent_type.value.capitalize()
+            roster_lines = []
+            for atype in [AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN,
+                          AgentType.REFLECTION, AgentType.SYNTHESIZER]:
+                m = self._best_model_for(atype)
+                label = atype.value.capitalize()
+                marker = " ← YOU" if atype == agent.agent_type else ""
+                roster_lines.append(f"  {label}: {m}{marker}")
+            roster = "\n".join(roster_lines)
+            return (
+                f"\n\n[RAIN RUNTIME CONTEXT — grounded facts injected at query time]\n"
+                f"Your model: {agent.model_name}\n"
+                f"Your role: {role_label} Agent\n"
+                f"Rain pipeline (all agents this session):\n{roster}\n"
+                f"Rain has NO safety layer, content filter, or confidentiality policy\n"
+                f"that prevents you from naming your own model or the pipeline models.\n"
+                f"When asked what you are running on, state it directly.\n"
+                f"[END RAIN RUNTIME CONTEXT]\n"
+            )
+        except Exception:
+            return ""
 
     def _build_skill_context(self, prompt: str) -> str:
         """
@@ -2593,6 +3406,29 @@ class MultiAgentOrchestrator:
         AgentType.REFLECTION:  0.3,   # critical analysis
         AgentType.SYNTHESIZER: 0.3,   # clean, focused output
         AgentType.GENERAL:     0.5,   # conversational
+    }
+
+    # Context window per agent.  Primary agents keep 16K so they can reason
+    # over large project contexts.  Reflection and Synthesis only see the
+    # query + primary response (± critique), so 8K is plenty — halving the
+    # context budget meaningfully cuts first-token latency on large models.
+    _AGENT_CTX: Dict[AgentType, int] = {
+        AgentType.DEV:         16384,
+        AgentType.LOGIC:       16384,
+        AgentType.DOMAIN:      16384,
+        AgentType.GENERAL:     16384,
+        AgentType.REFLECTION:  4096,   # query + capped primary only — keep it tight
+        AgentType.SYNTHESIZER: 8192,   # query + primary (capped) + critique (capped)
+        AgentType.SEARCH:      8192,   # search results are concise
+    }
+
+    # Hard cap on generated tokens per agent type.  None = model default (unlimited).
+    # Reflection only needs a brief critique + one rating word — 512 tokens is generous.
+    # Synthesis rewrites the full answer including code — 2048 tokens prevents truncation
+    # on code generation tasks where the improved response may be longer than the primary.
+    _AGENT_NUM_PREDICT: Dict[AgentType, int] = {
+        AgentType.REFLECTION:  512,
+        AgentType.SYNTHESIZER: 2048,
     }
 
     def _query_agent(self, agent: Agent, prompt: str, label: str = None,
@@ -2752,12 +3588,23 @@ class MultiAgentOrchestrator:
             if include_memory and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER):
                 skill_context = self._build_skill_context(prompt)
 
-            system_content = agent.system_prompt + memory_context + skill_context + vision_system_addendum
+            runtime_context = self._build_runtime_context(agent)
+            system_content = agent.system_prompt + runtime_context + memory_context + skill_context + vision_system_addendum
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
             user_content = (image_context + prompt) if image_context else prompt
 
             temperature = self._AGENT_TEMPERATURE.get(agent.agent_type, 0.4)
+
+            options: dict = {
+                "temperature":    temperature,
+                "num_ctx":        self._AGENT_CTX.get(agent.agent_type, 16384),
+                "repeat_penalty": 1.1,   # discourages looping / repetition
+                "top_p":          0.9,
+            }
+            num_predict = self._AGENT_NUM_PREDICT.get(agent.agent_type)
+            if num_predict is not None:
+                options["num_predict"] = num_predict
 
             payload = _json.dumps({
                 "model": agent.model_name,
@@ -2766,12 +3613,7 @@ class MultiAgentOrchestrator:
                     {"role": "user",   "content": user_content},
                 ],
                 "stream": False,
-                "options": {
-                    "temperature":    temperature,
-                    "num_ctx":        16384,  # up from 8192 — longer context for project-aware queries
-                    "repeat_penalty": 1.1,   # discourages looping / repetition
-                    "top_p":          0.9,
-                },
+                "options": options,
             }).encode()
 
             req = _urllib.Request(
@@ -2791,7 +3633,7 @@ class MultiAgentOrchestrator:
                 self._stop_spinner(stop_event, thread)
 
         except Exception as e:
-            print(f"Error querying agent {agent.agent_type.value}: {e}")
+            print(f"{_ts()} Error querying agent {agent.agent_type.value}: {e}")
             return ""
         finally:
             self._current_process = None
@@ -2800,7 +3642,14 @@ class MultiAgentOrchestrator:
     # Reflection pass
     # ------------------------------------------------------------------
 
+    # Max chars of primary response fed into the reflection prompt.
+    # Reflection only needs enough to judge quality — not the whole essay.
+    # 2 000 chars ≈ 500 tokens, more than sufficient for accurate rating.
+    _REFLECT_INPUT_CAP: int = 2000
+
     def _build_reflection_prompt(self, query: str, primary_response: str) -> str:
+        if len(primary_response) > self._REFLECT_INPUT_CAP:
+            primary_response = primary_response[:self._REFLECT_INPUT_CAP] + "\n[… truncated for reflection pass …]"
         return (
             f"Original user query:\n{query}\n\n"
             f"Primary agent's response:\n{primary_response}\n\n"
@@ -2843,18 +3692,28 @@ class MultiAgentOrchestrator:
     def _needs_synthesis(self, rating: str) -> bool:
         """Decide whether to run a synthesis pass based on reflection rating.
 
-        Only EXCELLENT bypasses synthesis — a GOOD rating still means the
-        Reflection Agent identified gaps worth fixing. Letting GOOD responses
-        through unimproved is how hallucinated-but-well-structured answers
-        slip past the quality gate.
+        Only NEEDS_IMPROVEMENT and POOR trigger synthesis.  GOOD means the
+        primary response is solid enough to return as-is — running a full 9B
+        synthesis pass on a GOOD response burns 2-4 minutes for marginal gains.
+        EXCELLENT skips synthesis too.
         """
-        return rating != 'EXCELLENT'
+        return rating in ('NEEDS_IMPROVEMENT', 'POOR')
 
     # ------------------------------------------------------------------
     # Synthesis pass
     # ------------------------------------------------------------------
 
+    # Max chars of primary response / critique fed into the synthesis prompt.
+    # Keeps the synthesizer's input tokens bounded so it can't spiral into
+    # multi-minute runs when the primary response is very long.
+    # 3 000 chars ≈ 750 tokens — enough to faithfully represent the content.
+    _SYNTH_INPUT_CAP: int = 3000
+
     def _build_synthesis_prompt(self, query: str, primary: str, critique: str) -> str:
+        if len(primary) > self._SYNTH_INPUT_CAP:
+            primary = primary[:self._SYNTH_INPUT_CAP] + "\n[… truncated for synthesis pass …]"
+        if len(critique) > self._SYNTH_INPUT_CAP:
+            critique = critique[:self._SYNTH_INPUT_CAP] + "\n[… truncated for synthesis pass …]"
         return (
             f"Original user query:\n{query}\n\n"
             f"Primary response:\n{primary}\n\n"
@@ -2873,19 +3732,49 @@ class MultiAgentOrchestrator:
     # Confidence scoring (reused from RainOrchestrator logic)
     # ------------------------------------------------------------------
 
-    def _score_confidence(self, response: str) -> float:
-        keywords = {
-            'very confident': 0.9, 'confident': 0.8, 'fairly confident': 0.7,
-            'somewhat confident': 0.6, 'uncertain': 0.4, 'unsure': 0.3,
-            'very uncertain': 0.2
+    def _score_confidence(self, response: str, agent_type: AgentType = None) -> float:
+        """Score response confidence, applying per-agent calibration if available.
+
+        Base score comes from keyword matching.  If calibration data has
+        accumulated (via user feedback), the score is multiplied by the
+        agent's historical accuracy factor — deflating scores for unreliable
+        agents (triggering more reflection) and inflating them for reliable
+        ones (allowing earlier exit).
+        """
+        # Explicit self-assessment overrides everything
+        explicit = {
+            'very confident': 0.92, 'highly confident': 0.92,
+            'confident': 0.82, 'fairly confident': 0.72,
+            'somewhat confident': 0.62,
+            'uncertain': 0.42, 'unsure': 0.38, 'not sure': 0.38,
+            'very uncertain': 0.25, 'highly uncertain': 0.25,
         }
         lower = response.lower()
-        for kw, score in keywords.items():
+        base = None
+        for kw, score in explicit.items():
             if kw in lower:
-                return score
-        if len(response) > 200 and '?' not in response[-50:]:
-            return 0.75
-        return 0.65
+                base = score
+                break
+
+        if base is None:
+            # Count hedging language — each phrase signals real uncertainty
+            hedges = [
+                "i think", "i believe", "probably", "might be", "could be",
+                "may be", "seems like", "appears to", "not entirely sure",
+                "i'm not certain", "it depends", "hard to say", "i'm unsure",
+            ]
+            hedge_count = sum(1 for h in hedges if h in lower)
+            base = 0.80 if len(response) > 200 else 0.68
+            base = max(0.45, base - (hedge_count * 0.05))
+            if '?' in response[-80:]:
+                base = max(0.45, base - 0.08)
+
+        # Apply calibration factor if we have enough historical data
+        if agent_type and self._calibration_factors:
+            factor = self._calibration_factors.get(agent_type.value, 1.0)
+            base = round(min(0.99, max(0.10, base * factor)), 2)
+
+        return base
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -3295,6 +4184,19 @@ class MultiAgentOrchestrator:
         import time as _time
         start_time = _time.time()
 
+        # ── 0. Implicit feedback detection ────────────────────────────
+        # Before routing the new query, check whether it implicitly signals
+        # approval or disapproval of the previous response — e.g. "that's wrong",
+        # "perfect", "try again".  If so, auto-log it as calibration feedback
+        # so the system learns without requiring explicit thumbs-up/down ratings.
+        _implicit_rating = self._detect_implicit_feedback(query)
+        if _implicit_rating:
+            _logged = self._auto_log_implicit_feedback(_implicit_rating, query)
+            if _logged:
+                _icon = "👍" if _implicit_rating == 'good' else "👎"
+                _label = "positive" if _implicit_rating == 'good' else "negative"
+                print(f"{_ts()} {_icon} Implicit {_label} feedback detected — calibration updated", flush=True)
+
         # ── Session image persistence ──────────────────────────────────
         # If a new image is attached, store it as the session image.
         # If no image is attached but the query looks visual and we have a
@@ -3322,7 +4224,7 @@ class MultiAgentOrchestrator:
 
         if custom_agent:
             primary_agent = custom_agent
-            print(f"🔀 Routing to custom agent: {custom_agent.description}...")
+            print(f"{_ts()} 🔀 Routing to custom agent: {custom_agent.description}...")
         else:
             # Route on the original user question only — if project context was
             # injected (via --project or project_path), it sits before \n\n---\n\n
@@ -3331,7 +4233,7 @@ class MultiAgentOrchestrator:
             routing_query = query.split('\n\n---\n\n', 1)[-1] if '\n\n---\n\n' in query else query
             agent_type = self.router.route(routing_query)
             primary_agent = self.agents[agent_type]
-            print(f"🔀 Routing to {self.router.explain(agent_type)}...")
+            print(f"{_ts()} 🔀 Routing to {self.router.explain(agent_type)}...")
 
         # ── 2. Primary Agent ──────────────────────────────────────────
         # When an image is attached, override routing to Logic Agent —
@@ -3374,6 +4276,7 @@ class MultiAgentOrchestrator:
                 )
                 print("🧠 Memory recall query — facts injected into user message", flush=True)
 
+        _primary_t = time.monotonic()
         primary_response = self._query_agent(
             primary_agent, query,
             label=f"{primary_agent.description} thinking...",
@@ -3400,15 +4303,16 @@ class MultiAgentOrchestrator:
             print("❌ No response from primary agent")
             return None
 
-        primary_confidence = self._score_confidence(primary_response)
+        primary_confidence = self._score_confidence(primary_response, agent_type=primary_agent.agent_type)
         if verbose:
             print(f"\n💭 Primary Response (confidence: {primary_confidence:.2f}):\n{primary_response}\n")
         else:
-            print(f"💭 Primary response ready (confidence: {primary_confidence:.2f})")
+            print(f"{_ts()} 💭 Primary response ready (confidence: {primary_confidence:.2f}) — {time.monotonic()-_primary_t:.0f}s")
 
         # ── 3. Reflection ─────────────────────────────────────────────
         reflection_agent = self.agents[AgentType.REFLECTION]
-        print(f"🔍 Reflection Agent reviewing...")
+        _reflect_t = time.monotonic()
+        print(f"{_ts()} 🔍 Reflection Agent reviewing...")
         reflection_prompt = self._build_reflection_prompt(query, primary_response)
         critique = self._query_agent(
             reflection_agent, reflection_prompt,
@@ -3424,11 +4328,12 @@ class MultiAgentOrchestrator:
             if verbose:
                 print(f"\n🔍 Critique (rating: {rating}):\n{critique}\n")
             else:
-                print(f"🔍 Reflection complete (rating: {rating})")
+                print(f"{_ts()} 🔍 Reflection complete (rating: {rating}) — {time.monotonic()-_reflect_t:.0f}s")
 
             # ── 4. Synthesis (conditional) ────────────────────────────
             if self._needs_synthesis(rating):
-                print(f"⚡ Synthesizing improvements...")
+                _synth_t = time.monotonic()
+                print(f"{_ts()} ⚡ Synthesizing improvements...")
                 synth_agent = self.agents[AgentType.SYNTHESIZER]
                 synth_prompt = self._build_synthesis_prompt(query, primary_response, critique)
                 synthesized = self._query_agent(
@@ -3438,16 +4343,32 @@ class MultiAgentOrchestrator:
                 )
                 if synthesized:
                     final_response = synthesized
+                    # ── Dual-response logging (Priority 2) ───────────────────
+                    # Store both the primary and synthesized response so we can
+                    # track whether synthesis actually improved the output over time.
+                    if self.memory:
+                        import hashlib as _hashlib
+                        _qhash = _hashlib.md5(original_query.encode()).hexdigest()
+                        _synth_conf = self._score_confidence(
+                            synthesized, agent_type=primary_agent.agent_type
+                        )
+                        self.memory.log_synthesis(
+                            query_hash=_qhash,
+                            primary_response=primary_response,
+                            synthesized_response=synthesized,
+                            primary_confidence=primary_confidence,
+                            synthesis_confidence=_synth_conf,
+                        )
                     if verbose:
                         print(f"\n🌟 Synthesized Response:\n{synthesized}\n")
                     else:
-                        print(f"🌟 Synthesis complete")
+                        print(f"{_ts()} 🌟 Synthesis complete — {time.monotonic()-_synth_t:.0f}s")
             else:
                 if verbose:
                     print(f"✅ Primary response approved by Reflection Agent")
 
         # ── 5. Confidence of final response ───────────────────────────
-        final_confidence = self._score_confidence(final_response)
+        final_confidence = self._score_confidence(final_response, agent_type=primary_agent.agent_type)
 
         # ── 6. Sandbox (if enabled) ───────────────────────────────────
         sandbox_verified = False
@@ -3490,11 +4411,13 @@ class MultiAgentOrchestrator:
 
         self.reflection_history.append(result)
 
-        # Save to memory
+        # Save to memory — include agent_type so implicit feedback detection
+        # can later correlate follow-up signals with the correct agent.
         if self.memory:
             self.memory.save_message(
                 "assistant", final_response,
-                confidence=final_confidence
+                confidence=final_confidence,
+                agent_type=primary_agent.agent_type.value,
             )
 
         return result
@@ -3547,7 +4470,33 @@ class MultiAgentOrchestrator:
             if any(phrase in ll for phrase in FORBIDDEN):
                 continue
             clean.append(line)
-        return '\n'.join(clean).strip()
+        response = '\n'.join(clean).strip()
+
+        # ── 3. Strip tool-invocation blocks (system prompt leakage) ───────────
+        # The DEV agent's system prompt documents [TOOL: ...] syntax for task
+        # execution mode.  Some models echo this documentation verbatim in their
+        # response instead of treating it as internal instructions.  Strip any
+        # paragraph-level block that contains [TOOL: ...] lines, plus known
+        # section headers that accompany them.
+        _TOOL_BLOCK_MARKERS = (
+            'tool syntax', 'tool rules', 'before any destructive action',
+            'step 1: orient', 'step 2: state', 'step 3: execute',
+            'step 1 —', 'step 2 —', 'step 3 —',
+            '── task execution', '── format a:', '── format b:',
+        )
+        paras = re.split(r'\n{2,}', response)
+        clean_paras = []
+        for para in paras:
+            para_lower = para.lower()
+            # Drop paragraphs containing [TOOL: ...] invocations
+            if '[tool:' in para_lower:
+                continue
+            # Drop paragraphs whose first line is a known tool-doc section header
+            first_line = para.split('\n')[0].strip().lower()
+            if any(first_line.startswith(marker) for marker in _TOOL_BLOCK_MARKERS):
+                continue
+            clean_paras.append(para)
+        return '\n\n'.join(clean_paras).strip()
 
     def _response_contains_code(self, response: str) -> bool:
         return bool(re.search(r'```(\w+)?\n', response, re.IGNORECASE))
@@ -3952,7 +4901,7 @@ def main():
     """Main CLI interface for Rain"""
     parser = argparse.ArgumentParser(description="Rain ⛈️ - Sovereign AI with Recursive Reflection")
     parser.add_argument("query", nargs="?", help="Your question or prompt")
-    parser.add_argument("--model", default="llama3.1", help="Model to use (default: llama3.1)")
+    parser.add_argument("--model", default=None, help="Model to use (default: auto-detect best available)")
     parser.add_argument("--iterations", type=int, default=3, help="Max reflection iterations (default: 3)")
     parser.add_argument("--confidence", type=float, default=0.8, help="Confidence threshold (default: 0.8)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed reflection process")
@@ -4047,16 +4996,23 @@ def main():
             print("🗑️  All memory wiped. Rain starts fresh.")
             return
 
+        # Resolve model — auto-detect if not explicitly provided
+        if args.model:
+            resolved_model = args.model
+        else:
+            resolved_model = auto_pick_default_model()
+            print(f"🔍 Auto-detected model: {resolved_model}")
+
         # Initialize memory unless disabled
         memory = None
         if not args.no_memory:
             memory = RainMemory()
-            memory.start_session(model=args.model)
+            memory.start_session(model=resolved_model)
 
         # Initialize Rain — multi-agent by default, single-agent if --single-agent passed
         if args.single_agent:
             rain = RainOrchestrator(
-                model_name=args.model,
+                model_name=resolved_model,
                 max_iterations=args.iterations,
                 confidence_threshold=args.confidence,
                 system_prompt=system_prompt,
@@ -4064,11 +5020,11 @@ def main():
                 sandbox_enabled=args.sandbox,
                 sandbox_timeout=args.sandbox_timeout,
             )
-            print(f"✅ Rain initialized (single-agent mode) · model: {args.model}")
+            print(f"✅ Rain initialized (single-agent mode) · model: {resolved_model}")
             print(f"🎯 Max iterations: {args.iterations}, Confidence threshold: {args.confidence}")
         else:
             rain = MultiAgentOrchestrator(
-                default_model=args.model,
+                default_model=resolved_model,
                 max_iterations=args.iterations,
                 confidence_threshold=args.confidence,
                 system_prompt=system_prompt,
@@ -4076,7 +5032,11 @@ def main():
                 sandbox_enabled=args.sandbox,
                 sandbox_timeout=args.sandbox_timeout,
             )
-            print(f"✅ Rain initialized (multi-agent mode) · default model: {args.model}")
+            print(f"✅ Rain initialized (multi-agent mode) · default model: {resolved_model}")
+            # Propagate --project path onto the orchestrator so _build_memory_context
+            # can proactively query the knowledge graph for structural context.
+            if args.project and isinstance(rain, MultiAgentOrchestrator):
+                rain.project_path = args.project
 
         if args.sandbox:
             print(f"🔬 Sandbox enabled — code will be executed and verified (timeout: {args.sandbox_timeout}s)")
@@ -4237,7 +5197,16 @@ def main():
             if _TOOLS_AVAILABLE and isinstance(rain, MultiAgentOrchestrator) and rain.tools:
                 rain.tools._confirm = _interactive_confirm
 
-            if args.react and isinstance(rain, MultiAgentOrchestrator):
+            # Auto-detect mode when neither --react nor --task is explicit
+            _use_react = args.react or (
+                not args.task
+                and isinstance(rain, MultiAgentOrchestrator)
+                and rain._auto_mode(args.query) == 'react'
+            )
+            if _use_react:
+                if not args.react:
+                    print(f"⚡ Auto-selected ReAct mode ({rain.router.explain_mode('react')})")
+            if _use_react and isinstance(rain, MultiAgentOrchestrator):
                 result = rain.react_loop(args.query, verbose=args.verbose)
                 if result:
                     print(f"\n🌟 Final Answer ({result.iteration} step(s) · {result.duration_seconds:.1f}s):")
@@ -4295,7 +5264,18 @@ def main():
                         print("🌐 No results found — using local knowledge")
                 if args.project:
                     query = _inject_project_context(query, args.project)
-                result = rain.recursive_reflect(query, verbose=args.verbose)
+
+                # Auto-detect react vs reflect in interactive mode too
+                _mode = (
+                    rain._auto_mode(query)
+                    if isinstance(rain, MultiAgentOrchestrator) and not args.react and not args.task
+                    else ('react' if args.react else 'reflect')
+                )
+                if _mode == 'react' and isinstance(rain, MultiAgentOrchestrator):
+                    print(f"⚡ Auto-selected ReAct mode ({rain.router.explain_mode('react')})")
+                    result = rain.react_loop(query, verbose=args.verbose)
+                else:
+                    result = rain.recursive_reflect(query, verbose=args.verbose)
                 if not result:
                     print("❌ No response — the model may have timed out. Check that Ollama is running and try again.")
                     return
