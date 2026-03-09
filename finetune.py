@@ -371,6 +371,38 @@ def get_hf_model_id(ollama_model: str) -> Optional[str]:
     return None
 
 
+def _fuse_adapter_to_gguf(adapter_path: Path) -> Optional[Path]:
+    """
+    Fuse a trained MLX LoRA adapter into the base model and export as GGUF.
+    Returns the GGUF path on success, None if the architecture isn't supported.
+
+    mlx_lm fuse --export-gguf currently supports: llama, mistral, gemma.
+    qwen2 support is not yet available (as of mlx_lm 0.31.0).
+    """
+    gguf_path = ADAPTER_DIR / "rain-tuned.gguf"
+    mlx_model_path = MLX_MODEL_DIR / "qwen2.5-coder-7b"  # adjust if base model changes
+    if not mlx_model_path.exists():
+        return None
+    print(_c(CYAN, "  Fusing adapter weights into GGUF…"))
+    try:
+        result = subprocess.run([
+            sys.executable, "-m", "mlx_lm", "fuse",
+            "--model",        str(mlx_model_path),
+            "--adapter-path", str(adapter_path),
+            "--save-path",    str(ADAPTER_DIR / "rain-fused"),
+            "--export-gguf",
+            "--gguf-path",    str(gguf_path),
+        ], capture_output=True, text=True)
+        if result.returncode == 0 and gguf_path.exists():
+            size_gb = gguf_path.stat().st_size / 1_073_741_824
+            print(_c(GREEN, f"  ✅ GGUF exported ({size_gb:.1f} GB) → {gguf_path}"))
+            return gguf_path
+        # Architecture not supported — silent failure, caller handles it
+        return None
+    except Exception:
+        return None
+
+
 def run_mlx_training(
     training_data_dir: Path,
     model_name: str,
@@ -856,20 +888,19 @@ def run_full_pipeline(iters: int = 200, lora_layers: int = 8,
             print(_c(DIM, "    • Unsloth (Colab, free GPU): https://github.com/unslothai/unsloth"))
             print(_c(DIM, "    • HuggingFace TRL SFTTrainer: pip install trl"))
 
-    # Step 3: Register model
+    # Step 3: Fuse adapter into GGUF and register model
     print(_c(BOLD, "\n── Step 3/3: Register Ollama model ─────────────────"))
-    # For MLX adapters we can't directly use them in Ollama yet —
-    # register a system-prompt-only model as the immediate benefit.
-    # Full adapter integration requires GGUF export (mlx_lm.fuse + convert).
-    if adapter_path and str(adapter_path).endswith(".gguf"):
-        create_ollama_model(base_model, adapter_path)
+    if adapter_path and adapter_path.exists():
+        gguf_path = _fuse_adapter_to_gguf(adapter_path)
+        if gguf_path:
+            create_ollama_model(base_model, gguf_path)
+        else:
+            print(_c(YELLOW, "  ⚠️  GGUF export not supported for this model architecture yet."))
+            print(   "     Registering with behavioral system prompt (adapter weights preserved).")
+            print(_c(DIM,  f"     Adapter saved at: {adapter_path}"))
+            print(_c(DIM,   "     Re-run --full after mlx_lm adds qwen2 GGUF support to include LoRA weights."))
+            create_ollama_model(base_model, adapter_path=None)
     else:
-        if adapter_path:
-            print(_c(YELLOW, "  ⚠️  MLX adapter created but cannot be loaded directly into Ollama."))
-            print("     Registering a system-prompt-only model as an intermediate step.")
-            print(_c(DIM,  f"     Adapter weights saved at: {adapter_path}"))
-            print(_c(DIM,   "     To fuse + convert: mlx_lm.fuse --model <mlx-path> --adapter-path <adapter>"))
-            print(_c(DIM,   "                        mlx_lm.convert --hf-path <fused> --mlx-path <out> -q"))
         create_ollama_model(base_model, adapter_path=None)
 
     print(_c(BOLD + GREEN, "\n⛈️  Pipeline complete.\n"))
