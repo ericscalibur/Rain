@@ -3599,13 +3599,14 @@ class MultiAgentOrchestrator:
         AgentType.GENERAL:     0.5,   # conversational
     }
 
-    # Context window per agent.  Primary agents keep 16K so they can reason
-    # over large project contexts.  Reflection and Synthesis only see the
-    # query + primary response (± critique), so 8K is plenty — halving the
-    # context budget meaningfully cuts first-token latency on large models.
+    # Context window per agent.  DEV keeps 16K for large code contexts.
+    # LOGIC is reduced to 8K — pure reasoning tasks don't need the full
+    # project context, and a smaller window cuts first-token latency by ~50%
+    # on qwen3.5:9b (large pre-fill is the main bottleneck for slow responses).
+    # Reflection and Synthesis only see query + primary response, so 4-8K is plenty.
     _AGENT_CTX: Dict[AgentType, int] = {
         AgentType.DEV:         16384,
-        AgentType.LOGIC:       16384,
+        AgentType.LOGIC:       8192,   # reduced: reasoning doesn't need full project context
         AgentType.DOMAIN:      16384,
         AgentType.GENERAL:     16384,
         AgentType.REFLECTION:  4096,   # query + capped primary only — keep it tight
@@ -3617,13 +3618,28 @@ class MultiAgentOrchestrator:
     # Reflection only needs a brief critique + one rating word — 512 tokens is generous.
     # Synthesis rewrites the full answer including code — 2048 tokens prevents truncation
     # on code generation tasks where the improved response may be longer than the primary.
-    # LOGIC gets a cap to prevent runaway chain-of-thought on qwen3.5:9b's extended
-    # thinking mode — without it, multi-step puzzles can burn 5+ minutes and timeout.
-    # 2048 tokens covers both the think block and a thorough answer for any reasoning task.
+    #
+    # NOTE: Do NOT cap LOGIC here.  qwen3.5:9b generates thinking tokens first —
+    # on math/multi-step problems it exhausts a fixed budget entirely on internal
+    # reasoning before producing the answer, resulting in empty content and ❌.
+    # Let LOGIC run to completion; the per-agent timeout handles true runaway.
     _AGENT_NUM_PREDICT: Dict[AgentType, int] = {
-        AgentType.LOGIC:       2048,
         AgentType.REFLECTION:  512,
         AgentType.SYNTHESIZER: 2048,
+    }
+
+    # Per-agent HTTP timeout in seconds.
+    # LOGIC (qwen3.5:9b) and DEV (qwen2.5-coder:7b) need 300 s headroom —
+    # complex reasoning or code generation with large context can reach 200-280 s.
+    # Reflection and Search work on small focused inputs and should finish fast.
+    _AGENT_TIMEOUT: Dict[AgentType, int] = {
+        AgentType.LOGIC:       300,
+        AgentType.DEV:         300,
+        AgentType.DOMAIN:      180,
+        AgentType.GENERAL:     180,
+        AgentType.REFLECTION:  60,
+        AgentType.SYNTHESIZER: 180,
+        AgentType.SEARCH:      60,
     }
 
     def _query_agent(self, agent: Agent, prompt: str, label: str = None,
@@ -3820,14 +3836,19 @@ class MultiAgentOrchestrator:
 
             spinner_label = label or f"{agent.description} thinking..."
             stop_event, thread = self._start_spinner(spinner_label)
-            # 180 s covers even slow qwen3.5:9b reasoning passes (typical: 60–140s).
-            # 300 s was too generous — it let runaway chain-of-thought loops burn
-            # 5+ minutes before timing out.  With num_predict caps in place,
-            # any agent that exceeds 180 s is genuinely stuck, not just thinking.
+            agent_timeout = self._AGENT_TIMEOUT.get(agent.agent_type, 180)
             try:
-                with _urllib.urlopen(req, timeout=180) as resp:
+                with _urllib.urlopen(req, timeout=agent_timeout) as resp:
                     data = _json.loads(resp.read())
-                    return data["message"]["content"].strip()
+                    raw = data["message"]["content"].strip()
+                    # Strip qwen3 extended-thinking blocks (<think>…</think>).
+                    # These appear when thinking mode is active and contain the
+                    # model's internal reasoning chain — not part of the answer.
+                    # Removing them keeps responses clean and prevents the think
+                    # text from confusing downstream parsers or confidence scoring.
+                    import re as _re
+                    raw = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip()
+                    return raw
             finally:
                 self._stop_spinner(stop_event, thread)
 
