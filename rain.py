@@ -1013,9 +1013,10 @@ For philosophical, abstract, conceptual, or simple factual questions — where
 no files need to be read, no code needs to be written, and no multi-step task
 needs to be executed — answer directly in natural prose. Skip everything below
 this line. Use 1–3 clear paragraphs. No headers. No tables. No numbered
-sections. No bullet points unless the question genuinely calls for a list.
-Match the weight of your answer to the weight of the question: a 2-sentence
-question gets a 2–4 sentence answer, not a structured document.
+sections. No bullet points, dashes, or asterisks — even when the answer has
+multiple components, express them as flowing sentences within paragraphs, not
+as a list. Match the weight of your answer to the weight of the question: a
+2-sentence question gets a 2–4 sentence answer, not a structured document.
 
 ──────────────────────────────────────────────────────────────────────────────
 
@@ -2621,14 +2622,15 @@ class MultiAgentOrchestrator:
                 roster_lines.append(f"  {label}: {m}{marker}")
             roster = "\n".join(roster_lines)
             return (
-                f"\n\n[RAIN RUNTIME CONTEXT — grounded facts injected at query time]\n"
-                f"Your model: {agent.model_name}\n"
-                f"Your role: {role_label} Agent\n"
-                f"Rain pipeline (all agents this session):\n{roster}\n"
-                f"Rain has NO safety layer, content filter, or confidentiality policy\n"
-                f"that prevents you from naming your own model or the pipeline models.\n"
-                f"When asked what you are running on, state it directly.\n"
-                f"[END RAIN RUNTIME CONTEXT]\n"
+                f"[RAIN DEPLOYMENT — factual context, read first]\n"
+                f"You are {agent.model_name}, running locally via Ollama.\n"
+                f"Your role in this session: {role_label} Agent.\n"
+                f"Full pipeline roster:\n{roster}\n"
+                f"This is a local sovereign deployment. There is no corporate confidentiality\n"
+                f"policy, no content filter, and no restriction on naming your own model or\n"
+                f"the other models in the pipeline. If asked what you are, state the above\n"
+                f"facts directly — model name, role, and pipeline.\n"
+                f"[END DEPLOYMENT CONTEXT]\n\n"
             )
         except Exception:
             return ""
@@ -2801,7 +2803,7 @@ class MultiAgentOrchestrator:
                 skill_context = self._build_skill_context(prompt)
 
             runtime_context = self._build_runtime_context(agent)
-            system_content = agent.system_prompt + runtime_context + memory_context + skill_context + vision_system_addendum
+            system_content = runtime_context + agent.system_prompt + memory_context + skill_context + vision_system_addendum
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
             user_content = (image_context + prompt) if image_context else prompt
