@@ -2190,7 +2190,19 @@ class AgentRouter:
             return AgentType.SEARCH
         search_score = sum(1 for kw in self.SEARCH_KEYWORDS if kw in query_lower)
         if search_score >= 2:
-            return AgentType.SEARCH
+            # Guard against server boilerplate ("live data", "real-time numbers")
+            # falsely triggering SEARCH on pure deduction/reasoning queries.
+            # The server wraps augmented queries as:
+            #   "...live data...real-time...\n\nQuestion: {original}"
+            # Extract the original query and check for reasoning intent.
+            _orig = query_lower
+            if '\nquestion: ' in query_lower:
+                _orig = query_lower.split('\nquestion: ', 1)[-1].strip()
+            _reasoning_override = sum(1 for kw in self.REASONING_KEYWORDS if kw in _orig)
+            if _reasoning_override >= 1:
+                pass  # fall through — logic signal wins over search boilerplate
+            else:
+                return AgentType.SEARCH
 
         domain_score   = sum(1 for kw in self.DOMAIN_KEYWORDS   if kw in query_lower)
         code_score     = sum(1 for kw in self.CODE_KEYWORDS      if kw in query_lower)
@@ -4025,6 +4037,9 @@ class MultiAgentOrchestrator:
             f"Important: A brief but correct answer is GOOD. A long but correct answer is also GOOD.\n"
             f"Do NOT rate down for style, length, or formatting preferences.\n"
             f"Only use NEEDS_IMPROVEMENT if there are actual errors or significant missing content that would mislead the user.\n\n"
+            f"SELF-CONSISTENCY CHECK: Before rating, verify that the response does not contradict itself. "
+            f"If the step-by-step reasoning leads to one conclusion but the final sentence states a different conclusion, "
+            f"that is an automatic NEEDS_IMPROVEMENT — even if the reasoning is otherwise correct.\n\n"
             f"End your critique with exactly one rating word on its own line: "
             f"EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR"
         )
@@ -4143,6 +4158,19 @@ class MultiAgentOrchestrator:
             base = max(0.45, base - (hedge_count * 0.05))
             if '?' in response[-80:]:
                 base = max(0.45, base - 0.08)
+            # Upward signal: structured reasoning and definitive answers earn a boost.
+            # A response that walks through explicit steps or states a clear conclusion
+            # is demonstrably more certain than one that just asserts.
+            _confidence_boosters = [
+                'therefore', 'thus', 'hence', 'so the answer is', 'the answer is',
+                'in conclusion', 'to conclude', 'this means that', 'we can conclude',
+                'step 1', 'step 2', 'first,', 'second,', 'finally,',
+            ]
+            boost_count = sum(1 for b in _confidence_boosters if b in lower)
+            if boost_count >= 2:
+                base = min(0.92, base + 0.06)
+            elif boost_count == 1:
+                base = min(0.92, base + 0.03)
 
         # Apply calibration factor if we have enough historical data
         if agent_type and self._calibration_factors:
