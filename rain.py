@@ -24,7 +24,7 @@ import uuid
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 # Phase 6: Skills runtime and tool registry
@@ -61,11 +61,14 @@ class RainMemory:
     Zero external dependencies - uses Python built-in sqlite3.
     """
 
-    def __init__(self):
+    def __init__(self, test_mode: bool = False):
         self.db_path = Path.home() / ".rain" / "memory.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.session_id = str(uuid.uuid4())
         self.session_start = datetime.now()
+        # test_mode: feedback and gap writes are suppressed so diagnostic
+        # sessions can't poison the calibration table.
+        self.test_mode = test_mode
         self._init_db()
 
     def _init_db(self):
@@ -485,7 +488,13 @@ class RainMemory:
         agent_type and confidence are recorded for calibration — over time Rain
         learns which agents produce reliable responses and adjusts their
         confidence scores accordingly.
+
+        In test_mode, feedback writes are suppressed so diagnostic sessions
+        can't poison the calibration table.
         """
+        if self.test_mode:
+            print("🧪 TEST MODE — feedback not recorded", flush=True)
+            return
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """INSERT INTO feedback
@@ -1003,7 +1012,10 @@ class RainMemory:
 
         Called when synthesis fired or confidence was low — Rain records what it
         was uncertain about so patterns can be surfaced later via get_top_gaps().
+        Suppressed in test_mode to keep diagnostic sessions from polluting the table.
         """
+        if self.test_mode:
+            return
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
@@ -1825,6 +1837,33 @@ AGENT_PREFERRED_MODELS = {
     AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
     AgentType.SEARCH:      ['llama3.2', 'llama3.1', 'mistral:7b'],
 }
+
+# ── Two-tier LOGIC routing ────────────────────────────────────────────────────
+# Short factual checks and syllogisms route to a fast model (5–15s).
+# Multi-step analysis and deep explanations stay on qwen3.5:9b (120–200s).
+#
+# Fast tier: llama3.2 (2 GB) handles yes/no logic, quick definitions, and
+# simple deductions without breaking a sweat.  Only used when the query is
+# short AND contains none of the complexity markers below.
+_LOGIC_FAST_PREFERRED = ['llama3.2', 'llama3.1', 'qwen3:4b']
+
+_LOGIC_COMPLEX_MARKERS = [
+    # Explanation / elaboration requests
+    'explain', 'elaborate', 'describe', 'discuss', 'summarize',
+    # Analysis / comparison
+    'analyze', 'analyse', 'compare', 'contrast', 'evaluate', 'assess',
+    'difference between', 'relationship between', 'similarities between',
+    # Causal / mechanism questions (multi-word to avoid single-word false-positives)
+    'why does', 'why is', 'why are', 'why do', 'why would',
+    'how does', 'how do', 'how would', 'how can', 'how should',
+    # Process / walkthrough
+    'walk me through', 'step by step', 'step-by-step', 'break it down', 'break down',
+    # Depth signals
+    'in depth', 'in-depth', 'deep dive', 'in detail', 'thoroughly', 'comprehensively',
+    # Trade-off / implication questions
+    'implications', 'consequences', 'pros and cons', 'trade-off', 'tradeoff',
+    'advantages', 'disadvantages',
+]
 
 # Vision-capable models in preference order — best first.
 # Ordered by real-world accuracy on UI screenshots, text, and diagrams.
@@ -3126,6 +3165,37 @@ class MultiAgentOrchestrator:
         except Exception:
             return [self.default_model]
 
+    def _is_simple_logic_query(self, query: str) -> bool:
+        """Return True if the query is short and simple enough for the fast LOGIC tier.
+
+        A query is considered simple when it is short (≤ 20 words) AND contains
+        none of the complexity markers that signal multi-step reasoning, deep
+        explanation, or comparative analysis.  Both conditions must hold —
+        a 5-word "explain X" is still complex; a 25-word syllogism is also complex.
+        """
+        q = query.lower()
+        if len(q.split()) > 20:
+            return False
+        for marker in _LOGIC_COMPLEX_MARKERS:
+            if marker in q:
+                return False
+        return True
+
+    def _fast_logic_model(self) -> Optional[str]:
+        """Return the best fast model for simple LOGIC queries, or None if unavailable.
+
+        Uses the same base-name matching as _best_model_for() so that
+        'llama3.2' correctly matches 'llama3.2:latest'.
+        Returns None if none of the fast-tier models are installed, in which
+        case the caller falls through to the standard LOGIC model.
+        """
+        for model in _LOGIC_FAST_PREFERRED:
+            pref_base = model.split(':')[0]
+            for installed in self._installed_models:
+                if installed.split(':')[0] == pref_base:
+                    return installed
+        return None
+
     def _best_model_for(self, agent_type: AgentType) -> str:
         """Pick the best installed model for an agent, falling back to default.
 
@@ -3644,7 +3714,8 @@ class MultiAgentOrchestrator:
     }
 
     def _query_agent(self, agent: Agent, prompt: str, label: str = None,
-                     include_memory: bool = True, image_b64: str = None) -> str:
+                     include_memory: bool = True, image_b64: str = None,
+                     token_callback: Optional[callable] = None) -> str:
         """Send a prompt to a specific agent via the Ollama HTTP API.
 
         Uses /api/chat with proper system/user message roles, agent-specific
@@ -3818,40 +3889,111 @@ class MultiAgentOrchestrator:
             if num_predict is not None:
                 options["num_predict"] = num_predict
 
-            payload = _json.dumps({
-                "model": agent.model_name,
-                "messages": [
-                    {"role": "system", "content": system_content},
-                    {"role": "user",   "content": user_content},
-                ],
-                "stream": False,
-                "options": options,
-            }).encode()
-
-            req = _urllib.Request(
-                "http://localhost:11434/api/chat",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-
-            spinner_label = label or f"{agent.description} thinking..."
-            stop_event, thread = self._start_spinner(spinner_label)
             agent_timeout = self._AGENT_TIMEOUT.get(agent.agent_type, 180)
-            try:
+            import re as _re
+
+            if token_callback is not None:
+                # ── Streaming path ─────────────────────────────────────────────
+                # Tokens arrive incrementally; each is forwarded to the caller
+                # via token_callback so the SSE pipeline can emit them live.
+                #
+                # <think>…</think> filtering: qwen3.5:9b emits an internal
+                # reasoning block before answering.  We buffer the first few
+                # tokens until we know whether a think block is present, then
+                # suppress those tokens and only emit the actual answer.
+                payload = _json.dumps({
+                    "model": agent.model_name,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {"role": "user",   "content": user_content},
+                    ],
+                    "stream": True,
+                    "options": options,
+                }).encode()
+
+                req = _urllib.Request(
+                    "http://localhost:11434/api/chat",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                tokens = []
+                # Think-block state: buffer until we know if a <think> block
+                # is present (flush immediately if not), suppress if present.
+                _pre_buf = []
+                _think_done = False
+
                 with _urllib.urlopen(req, timeout=agent_timeout) as resp:
-                    data = _json.loads(resp.read())
-                    raw = data["message"]["content"].strip()
-                    # Strip qwen3 extended-thinking blocks (<think>…</think>).
-                    # These appear when thinking mode is active and contain the
-                    # model's internal reasoning chain — not part of the answer.
-                    # Removing them keeps responses clean and prevents the think
-                    # text from confusing downstream parsers or confidence scoring.
-                    import re as _re
-                    raw = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip()
-                    return raw
-            finally:
-                self._stop_spinner(stop_event, thread)
+                    for raw_line in resp:
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            chunk = _json.loads(raw_line)
+                        except _json.JSONDecodeError:
+                            continue
+                        token = chunk.get("message", {}).get("content", "")
+                        if token:
+                            tokens.append(token)
+                            if not _think_done:
+                                _pre_buf.append(token)
+                                combined = "".join(_pre_buf)
+                                if "</think>" in combined:
+                                    # Think block closed — emit everything after it
+                                    _think_done = True
+                                    after = combined.split("</think>", 1)[1]
+                                    if after:
+                                        token_callback(after)
+                                elif len(_pre_buf) >= 3 and "<think>" not in combined:
+                                    # No think block after 3 tokens — flush buffer
+                                    _think_done = True
+                                    for t in _pre_buf:
+                                        token_callback(t)
+                                    _pre_buf = []
+                            else:
+                                token_callback(token)
+                        if chunk.get("done"):
+                            break
+
+                raw = "".join(tokens).strip()
+                raw = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip()
+                return raw
+
+            else:
+                # ── Non-streaming path (CLI, reflection, react) ────────────────
+                payload = _json.dumps({
+                    "model": agent.model_name,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {"role": "user",   "content": user_content},
+                    ],
+                    "stream": False,
+                    "options": options,
+                }).encode()
+
+                req = _urllib.Request(
+                    "http://localhost:11434/api/chat",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                spinner_label = label or f"{agent.description} thinking..."
+                stop_event, thread = self._start_spinner(spinner_label)
+                try:
+                    with _urllib.urlopen(req, timeout=agent_timeout) as resp:
+                        data = _json.loads(resp.read())
+                        raw = data["message"]["content"].strip()
+                        # Strip qwen3 extended-thinking blocks (<think>…</think>).
+                        # These appear when thinking mode is active and contain the
+                        # model's internal reasoning chain — not part of the answer.
+                        # Removing them keeps responses clean and prevents the think
+                        # text from confusing downstream parsers or confidence scoring.
+                        raw = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip()
+                        return raw
+                finally:
+                    self._stop_spinner(stop_event, thread)
 
         except Exception as e:
             print(f"{_ts()} Error querying agent {agent.agent_type.value}: {e}")
@@ -4467,6 +4609,16 @@ class MultiAgentOrchestrator:
             agent_type = self.router.route(routing_query)
             primary_agent = self.agents[agent_type]
             print(f"{_ts()} 🔀 Routing to {self.router.explain(agent_type)}...")
+
+            # ── Two-tier LOGIC: fast model for simple queries ──────────────
+            # Short factual checks and syllogisms → llama3.2 (5–15s)
+            # Deep analysis / multi-step reasoning → qwen3.5:9b (120–200s)
+            if agent_type == AgentType.LOGIC:
+                fast_model = self._fast_logic_model()
+                if fast_model and fast_model != primary_agent.model_name \
+                        and self._is_simple_logic_query(routing_query):
+                    primary_agent = replace(primary_agent, model_name=fast_model)
+                    print(f"{_ts()} ⚡ Simple query — fast LOGIC tier ({fast_model})", flush=True)
 
         # ── 2. Primary Agent ──────────────────────────────────────────
         # When an image is attached, override routing to Logic Agent —
@@ -5262,6 +5414,9 @@ def main():
     parser.add_argument("--file", "-f", help="Load code or text from a file and analyze it")
     parser.add_argument("--query", "-q", help="Targeted question to ask about the file (use with --file)")
     parser.add_argument("--no-memory", action="store_true", help="Disable persistent memory for this session")
+    parser.add_argument("--test-mode", action="store_true",
+                        help="Test mode — feedback and gap writes suppressed; calibration read-only. "
+                             "Use when running diagnostic prompts to prevent poisoning the calibration table.")
     parser.add_argument("--forget", action="store_true", help="Wipe all stored memory and exit")
     parser.add_argument("--memories", action="store_true", help="Show stored session history and exit")
     parser.add_argument("--sandbox", "-s", action="store_true",
@@ -5356,7 +5511,9 @@ def main():
         # Initialize memory unless disabled
         memory = None
         if not args.no_memory:
-            memory = RainMemory()
+            memory = RainMemory(test_mode=getattr(args, 'test_mode', False))
+            if memory.test_mode:
+                print("🧪 TEST MODE — feedback disabled, calibration read-only", flush=True)
             memory.start_session(model=resolved_model)
 
         # Initialize Rain — multi-agent by default, single-agent if --single-agent passed

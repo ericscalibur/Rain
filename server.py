@@ -12,6 +12,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import resource
 import sqlite3
 import sys
@@ -76,6 +77,12 @@ _orchestrator: Optional[MultiAgentOrchestrator] = None
 _memory: Optional[RainMemory] = None
 _custom_agents: list = []  # [{id, name, prompt}]
 _skill_loader: Optional['SkillLoader'] = None  # Phase 6
+# The real (unpatched) _query_agent bound method, stored at startup.
+# _stream_chat monkey-patches _orchestrator._query_agent per-request for SSE
+# streaming; capturing the original here prevents a race condition where two
+# concurrent requests each capture the OTHER's patched version as "original",
+# causing the patch to call itself with token_callback and crash.
+_real_query_agent = None
 
 
 def _load_rain_md() -> str:
@@ -103,9 +110,12 @@ def _load_rain_md() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Rain on startup, clean up on shutdown."""
-    global _orchestrator, _memory, _skill_loader
+    global _orchestrator, _memory, _skill_loader, _real_query_agent
     _default_model = auto_pick_default_model()
-    _memory = RainMemory()
+    _test_mode = os.environ.get("RAIN_TEST_MODE", "").lower() in ("1", "true", "yes")
+    _memory = RainMemory(test_mode=_test_mode)
+    if _test_mode:
+        print("🧪 TEST MODE — feedback disabled, calibration read-only", flush=True)
     _memory.start_session(model=_default_model)
     # Phase 11: load Rain's self-knowledge document
     rain_md = _load_rain_md()
@@ -115,6 +125,9 @@ async def lifespan(app: FastAPI):
         sandbox_enabled=False,  # user can toggle per request
         rain_md=rain_md,
     )
+    # Store the real unpatched method once at startup — _stream_chat uses this
+    # directly so concurrent requests never capture each other's patch.
+    _real_query_agent = _orchestrator._query_agent
     # Phase 6: load skills (graceful — missing skills dir is fine)
     if _SKILLS_AVAILABLE:
         try:
@@ -767,8 +780,8 @@ async def new_session():
     ending_memory = _memory
     ending_memory.end_session()
 
-    # Create a brand-new RainMemory — generates a fresh UUID
-    _memory = RainMemory()
+    # Create a brand-new RainMemory — preserve test_mode from the ending session
+    _memory = RainMemory(test_mode=ending_memory.test_mode)
     _memory.start_session(model=_orchestrator.default_model if _orchestrator else "llama3.1")
     if _orchestrator:
         _orchestrator.memory = _memory
@@ -1903,13 +1916,34 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             else:
                 _orchestrator.sandbox = None
 
-            # Monkey-patch _query_agent to emit progress events
-            original_query_agent = _orchestrator._query_agent
+            # Monkey-patch _query_agent to emit progress events.
+            # Always use _real_query_agent (captured at startup) as the original —
+            # never _orchestrator._query_agent, which may already be a patched
+            # version from a concurrent request.
+            original_query_agent = _real_query_agent
 
-            def patched_query_agent(agent, prompt, label=None, include_memory=True, image_b64=None):
-                emit({"type": "progress", "message": f"💭 {label or agent.description + ' thinking...'}"})
-                result = original_query_agent(agent, prompt, label=label, include_memory=include_memory, image_b64=image_b64)
-                return result
+            def patched_query_agent(agent, prompt, label=None, include_memory=True, image_b64=None, token_callback=None):
+                from rain import AgentType as _AgentType
+                if agent.agent_type == _AgentType.REFLECTION:
+                    # Reflection is fast and internal — no streaming, just a progress note
+                    emit({"type": "progress", "message": "🔍 Reflection Agent reviewing..."})
+                    return original_query_agent(agent, prompt, label=label,
+                                                include_memory=include_memory, image_b64=image_b64)
+
+                if agent.agent_type == _AgentType.SYNTHESIZER:
+                    # Clear the primary tokens already shown and stream the improved response
+                    emit({"type": "clear_response"})
+                    emit({"type": "progress", "message": "⚡ Synthesizer improving response..."})
+                else:
+                    # Primary agent — announce which one is thinking, then stream
+                    emit({"type": "progress", "message": f"💭 {label or agent.description + ' thinking...'}"})
+
+                def token_cb(token):
+                    emit({"type": "token", "content": token})
+
+                return original_query_agent(agent, prompt, label=label,
+                                            include_memory=include_memory, image_b64=image_b64,
+                                            token_callback=token_cb)
 
             _orchestrator._query_agent = patched_query_agent
 
@@ -1923,11 +1957,32 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             _orchestrator._parse_reflection_rating = patched_parse_rating
 
+            # ── Self-referential query detection ─────────────────────────────
+            # When the user asks Rain about itself (capabilities, value, identity,
+            # comparisons to other AI systems), web search is actively harmful —
+            # DuckDuckGo returns results about rain the weather phenomenon, which
+            # overwrites RAIN.md self-knowledge and produces hallucinated garbage.
+            # Detect these queries and suppress web search so RAIN.md can answer.
+            _SELF_REF_PATTERNS = [
+                'do you think you', 'do you think rain', 'are you valuable',
+                'are you useful', 'useful tool for humanity', 'valuable tool for humanity',
+                'compare yourself', 'compare rain to', 'rain compared to', 'rain vs ',
+                'based on what you know about yourself', 'what do you think about yourself',
+                'openclaw', 'tell me about yourself', 'describe yourself',
+                'what can you do', 'how do you compare', 'compare you to',
+                'you vs ', 'you compared to',
+            ]
+            _msg_lower = req.message.lower()
+            _is_self_ref = any(p in _msg_lower for p in _SELF_REF_PATTERNS)
+            do_web_search = req.web_search and not _is_self_ref
+            if _is_self_ref and req.web_search:
+                emit({"type": "progress", "message": "🧠 Self-referential query — answering from RAIN.md (web search suppressed)"})
+
             # ── Web search (if enabled) ───────────────────────────────────────
             search_results_count = 0
             search_augmented_message = None
             live_block = ""
-            if req.web_search:
+            if do_web_search:
                 emit({"type": "progress", "message": "🌐 Searching the web..."})
 
                 # Phase 7B: try live data feeds first — these return structured
@@ -2067,9 +2122,9 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
                 # Phase 7C/10: build data_sources list for freshness indicators
                 data_sources = []
-                if req.web_search and search_results_count:
+                if do_web_search and search_results_count:
                     data_sources.append("web_search")
-                if req.web_search and live_block:
+                if do_web_search and live_block:
                     data_sources.append("live_api")
                 if project_context_block:
                     data_sources.append("project_index")
@@ -2077,6 +2132,8 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                     data_sources.append("knowledge_graph")
                 if req.image_b64:
                     data_sources.append("vision")
+                if _is_self_ref:
+                    data_sources.append("rain_md")
                 if not data_sources:
                     data_sources.append("training_data")
 
@@ -2088,7 +2145,7 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                     "iterations": result.iteration,
                     "improvements": result.improvements,
                     "sandbox": sandbox_summary,
-                    "search_results": search_results_count if req.web_search else 0,
+                    "search_results": search_results_count if do_web_search else 0,
                     "vision_used": bool(req.image_b64),
                     "data_sources": data_sources,
                 })
@@ -2102,7 +2159,7 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             # mid-pipeline these would otherwise stay patched permanently,
             # leaking state into every subsequent request.
             _orchestrator.router.route = original_route
-            _orchestrator._query_agent = original_query_agent
+            _orchestrator._query_agent = _real_query_agent  # always restore to real, never to a patch
             _orchestrator._parse_reflection_rating = original_parse_rating
             emit({"type": "_done_sentinel"})
 
