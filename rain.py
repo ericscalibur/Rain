@@ -1038,6 +1038,7 @@ class RainMemory:
                        FROM knowledge_gaps
                        WHERE resolved = 0
                        GROUP BY gap_description
+                       HAVING COUNT(*) >= 2
                        ORDER BY frequency DESC, avg_confidence ASC
                        LIMIT ?""",
                     (limit,)
