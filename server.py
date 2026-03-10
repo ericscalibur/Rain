@@ -78,6 +78,28 @@ _custom_agents: list = []  # [{id, name, prompt}]
 _skill_loader: Optional['SkillLoader'] = None  # Phase 6
 
 
+def _load_rain_md() -> str:
+    """Read RAIN.md from the project root at startup.
+
+    RAIN.md is Rain's self-knowledge document — analogous to CLAUDE.md for
+    Claude. It gives Rain accurate, updatable context about its own capabilities,
+    phase status, limitations, and origin. Injected into every agent's system
+    prompt via _build_runtime_context() so Rain can answer self-referential
+    questions from facts rather than training guesses.
+    """
+    rain_md_path = Path(__file__).parent / "RAIN.md"
+    try:
+        content = rain_md_path.read_text(encoding="utf-8").strip()
+        print(f"📖 RAIN.md loaded ({len(content)} chars)", flush=True)
+        return content
+    except FileNotFoundError:
+        print("⚠️  RAIN.md not found — Rain will have limited self-knowledge", flush=True)
+        return ""
+    except Exception as e:
+        print(f"⚠️  RAIN.md failed to load: {e}", flush=True)
+        return ""
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Rain on startup, clean up on shutdown."""
@@ -85,10 +107,13 @@ async def lifespan(app: FastAPI):
     _default_model = auto_pick_default_model()
     _memory = RainMemory()
     _memory.start_session(model=_default_model)
+    # Phase 11: load Rain's self-knowledge document
+    rain_md = _load_rain_md()
     _orchestrator = MultiAgentOrchestrator(
         default_model=_default_model,
         memory=_memory,
         sandbox_enabled=False,  # user can toggle per request
+        rain_md=rain_md,
     )
     # Phase 6: load skills (graceful — missing skills dir is fine)
     if _SKILLS_AVAILABLE:

@@ -982,15 +982,14 @@ class RainMemory:
     def get_current_session_messages(self) -> List[Dict]:
         """Get messages from the current session only, in chronological order.
 
-        Used for conversation history recall ("what was my first question?") —
-        distinct from get_recent_messages which spans sessions for working memory.
-        Scoping to the current session prevents prior sessions from polluting the
-        answer (e.g. reporting a previous session's first message as the current one).
+        Used for conversation history recall ("what was my first question?") and
+        for Tier 2 working memory injection — distinct from get_recent_messages
+        which spans sessions. Includes rowid for targeted deletion in pruning.
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT m.role, m.content, m.timestamp, m.is_code, s.started_at
+                """SELECT m.rowid, m.role, m.content, m.timestamp, m.is_code, s.started_at
                    FROM messages m
                    JOIN sessions s ON m.session_id = s.id
                    WHERE m.session_id = ?
@@ -998,6 +997,112 @@ class RainMemory:
                 (self.session_id,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def log_knowledge_gap(self, session_id: str, query: str, gap: str, confidence: float):
+        """Persist a knowledge gap Rain identified in its own response.
+
+        Called when synthesis fired or confidence was low — Rain records what it
+        was uncertain about so patterns can be surfaced later via get_top_gaps().
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS knowledge_gaps (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT,
+                        query TEXT,
+                        gap_description TEXT,
+                        confidence REAL,
+                        resolved INTEGER DEFAULT 0,
+                        timestamp TEXT
+                    )""",
+                )
+                conn.execute(
+                    """INSERT INTO knowledge_gaps
+                           (session_id, query, gap_description, confidence, timestamp)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (session_id, query[:300], gap[:500], confidence,
+                     datetime.now().isoformat())
+                )
+        except Exception:
+            pass
+
+    def get_top_gaps(self, limit: int = 5) -> List[Dict]:
+        """Return the most common unresolved knowledge gaps across all sessions."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT gap_description, COUNT(*) as frequency,
+                              AVG(confidence) as avg_confidence
+                       FROM knowledge_gaps
+                       WHERE resolved = 0
+                       GROUP BY gap_description
+                       ORDER BY frequency DESC, avg_confidence ASC
+                       LIMIT ?""",
+                    (limit,)
+                ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def prune_session_memory(self, keep_recent: int = 20, model_query_fn=None) -> int:
+        """Deliberate forgetting — compress old session messages when the session grows large.
+
+        When a session exceeds `keep_recent * 2` messages, the oldest half is
+        summarized into a single compressed entry in the session_facts table and
+        deleted from the messages table.  The most recent `keep_recent` messages
+        are always preserved verbatim.
+
+        Returns the number of messages pruned (0 if nothing to do).
+        """
+        msgs = self.get_current_session_messages()
+        prune_threshold = keep_recent * 2  # only prune if session is genuinely large
+        if len(msgs) <= prune_threshold:
+            return 0
+
+        # Split: old half to compress, recent half to keep
+        split = len(msgs) - keep_recent
+        to_prune = msgs[:split]
+        if not to_prune:
+            return 0
+
+        # Build a summary of the pruned messages
+        summary_lines = []
+        for msg in to_prune:
+            role = "User" if msg["role"] == "user" else "Rain"
+            summary_lines.append(f"{role}: {msg['content'][:300]}")
+        raw = "\n".join(summary_lines)
+
+        if model_query_fn:
+            # Ask the model to compress — produces a tighter summary
+            compressed = model_query_fn(
+                f"Summarize the following conversation excerpt in 3-5 sentences, "
+                f"capturing the key topics, decisions, and facts. Be concise:\n\n{raw}"
+            )
+        else:
+            # Fallback: naive truncation if no model available
+            compressed = f"[Compressed: {len(to_prune)} earlier messages — {raw[:400]}...]"
+
+        # Persist the compressed summary as a session fact
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """INSERT INTO session_facts (session_id, fact, confidence, timestamp)
+                       VALUES (?, ?, ?, ?)""",
+                    (self.session_id,
+                     f"[Pruned memory summary] {compressed}",
+                     0.9,
+                     datetime.now().isoformat())
+                )
+                # Delete the pruned messages
+                ids = [m["rowid"] for m in to_prune if "rowid" in m]
+                if ids:
+                    conn.executemany("DELETE FROM messages WHERE rowid = ?", [(i,) for i in ids])
+        except Exception:
+            pass
+
+        return len(to_prune)
 
     def build_context_summary(self, model_query_fn) -> Optional[str]:
         """
@@ -2886,7 +2991,7 @@ class MultiAgentOrchestrator:
     def __init__(self, default_model: Optional[str] = None, max_iterations: int = 3,
                  confidence_threshold: float = 0.8, system_prompt: str = None,
                  memory: RainMemory = None, sandbox_enabled: bool = False,
-                 sandbox_timeout: int = 10):
+                 sandbox_timeout: int = 10, rain_md: str = ""):
         # Auto-detect the best available model when none is explicitly specified.
         self.default_model = default_model or auto_pick_default_model()
         self.max_iterations = max_iterations
@@ -2902,6 +3007,9 @@ class MultiAgentOrchestrator:
         self._last_vision_desc: Optional[str] = None  # set by _query_agent when vision runs
         self._session_image_b64: Optional[str] = None  # last image uploaded this session
         self._session_vision_desc: Optional[str] = None  # description of last image this session
+        # Phase 11: Rain's self-knowledge document — injected into every agent prompt.
+        # Loaded from RAIN.md at server startup; empty string = graceful no-op.
+        self.rain_md: str = rain_md
         # Active project path — set by --project flag or per-request in the server.
         # Used by _build_memory_context to proactively query the knowledge graph.
         self.project_path: Optional[str] = None
@@ -2944,6 +3052,19 @@ class MultiAgentOrchestrator:
                 self._calibration_factors = self.memory.get_calibration_factors()
                 if self._calibration_factors:
                     print(f"📊 Calibration loaded: {len(self._calibration_factors)} agent(s) have historical accuracy data")
+            except Exception:
+                pass
+
+        # Phase 11: surface top knowledge gaps on startup
+        if self.memory:
+            try:
+                gaps = self.memory.get_top_gaps(limit=3)
+                if gaps:
+                    print(f"🔍 Top knowledge gaps ({len(gaps)}):", flush=True)
+                    for g in gaps:
+                        freq = g.get("frequency", 1)
+                        desc = g.get("gap_description", "")[:80]
+                        print(f"   [{freq}x] {desc}", flush=True)
             except Exception:
                 pass
 
@@ -3257,10 +3378,14 @@ class MultiAgentOrchestrator:
                 date = datetime.fromisoformat(s["started_at"]).strftime("%b %d")
                 context += f"  [{date}] {s['summary']}\n"
 
-        # ── Tier 2: Working memory (recent messages) ───────────────────
-        recent = self.memory.get_recent_messages(limit=20)
+        # ── Tier 2: Working memory (current session only) ─────────────
+        # Scoped to the current session so cross-session messages don't
+        # contaminate in-session recall (e.g. "what was my first question?").
+        # Cross-session relevance is handled by Tier 3 (semantic search),
+        # which is already relevance-gated — the right channel for that job.
+        recent = self.memory.get_current_session_messages()
         if recent:
-            context += "\n\nRecent conversation context (for continuity):\n"
+            context += "\n\nCurrent conversation (this session):\n"
             for msg in recent:
                 role = "You" if msg["role"] == "user" else "Rain"
                 # 1500 chars — enough to include full image descriptions without truncating
@@ -3392,11 +3517,18 @@ class MultiAgentOrchestrator:
                 marker = " ← YOU" if atype == agent.agent_type else ""
                 roster_lines.append(f"  {label}: {m}{marker}")
             roster = "\n".join(roster_lines)
+
+            # Phase 11: prepend RAIN.md self-knowledge if loaded
+            rain_md_block = ""
+            if self.rain_md:
+                rain_md_block = f"{self.rain_md}\n\n---\n\n"
+
             return (
-                f"[RAIN DEPLOYMENT — factual context, read first]\n"
+                f"{rain_md_block}"
+                f"[RAIN DEPLOYMENT — live facts, read first]\n"
                 f"You are {agent.model_name}, running locally via Ollama.\n"
                 f"Your role in this session: {role_label} Agent.\n"
-                f"Full pipeline roster:\n{roster}\n"
+                f"Live pipeline roster:\n{roster}\n"
                 f"This is a local sovereign deployment. There is no corporate confidentiality\n"
                 f"policy, no content filter, and no restriction on naming your own model or\n"
                 f"the other models in the pipeline. If asked what you are, state the above\n"
@@ -4525,6 +4657,51 @@ class MultiAgentOrchestrator:
                 confidence=final_confidence,
                 agent_type=primary_agent.agent_type.value,
             )
+            # Phase 11: deliberate forgetting — prune session if it's grown large.
+            # Runs in a background thread so it never blocks the response.
+            # Only fires when session exceeds 40 messages (keep_recent=20, threshold=40).
+            def _maybe_prune():
+                try:
+                    pruned = self.memory.prune_session_memory(keep_recent=20)
+                    if pruned:
+                        print(f"🧹 Pruned {pruned} old session messages into summary", flush=True)
+                except Exception:
+                    pass
+            threading.Thread(target=_maybe_prune, daemon=True).start()
+
+            # Phase 11: gap detection — when synthesis fired or confidence was low,
+            # ask the model what it was uncertain about and log it for pattern analysis.
+            # Threshold: synthesis ran (rating NEEDS_IMPROVEMENT/POOR) OR conf < 0.72.
+            _gap_worthy = self._needs_synthesis(rating) or final_confidence < 0.72
+            if _gap_worthy:
+                _gap_query = original_query
+                _gap_response = final_response
+                _gap_conf = final_confidence
+                _gap_session = self.memory.session_id
+
+                def _detect_gap():
+                    try:
+                        reflection_agent = self.agents[AgentType.REFLECTION]
+                        gap_prompt = (
+                            f"A user asked: \"{_gap_query[:200]}\"\n\n"
+                            f"Rain's response had low confidence ({_gap_conf:.0%}) or needed synthesis. "
+                            f"In one sentence, identify the specific knowledge gap or uncertainty "
+                            f"that caused this — what did Rain not know well enough to answer confidently? "
+                            f"Be specific (e.g. 'Exact API rate limits for mempool.space' not 'API knowledge')."
+                        )
+                        gap_desc = self._query_agent(
+                            reflection_agent, gap_prompt,
+                            label="Gap detection...", include_memory=False
+                        )
+                        if gap_desc and len(gap_desc.strip()) > 10:
+                            self.memory.log_knowledge_gap(
+                                _gap_session, _gap_query,
+                                gap_desc.strip()[:500], _gap_conf
+                            )
+                            print(f"🔍 Gap logged: {gap_desc.strip()[:80]}...", flush=True)
+                    except Exception:
+                        pass
+                threading.Thread(target=_detect_gap, daemon=True).start()
 
         return result
 
