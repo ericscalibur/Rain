@@ -4136,9 +4136,14 @@ class MultiAgentOrchestrator:
             'very uncertain': 0.25, 'highly uncertain': 0.25,
         }
         lower = response.lower()
+        # Only scan the opening ~300 chars for explicit self-assessment.
+        # If "uncertain" / "confident" etc. appear deep in a long response
+        # they are describing content (e.g. answering a question *about*
+        # uncertainty), not Rain expressing meta-confidence in its answer.
+        _preamble = lower[:300]
         base = None
         for kw, score in explicit.items():
-            if kw in lower:
+            if kw in _preamble:
                 base = score
                 break
 
