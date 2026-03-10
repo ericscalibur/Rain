@@ -2058,6 +2058,23 @@ class AgentRouter:
         # and must route to LOGIC, not fall through to GENERAL.
         'actually', "you're wrong", "that's wrong", "that's incorrect",
         "that is wrong", "that is incorrect",
+        # Quantitative / logical reasoning questions — these look like math or
+        # logic puzzles but have no code keywords. They need the reasoning agent.
+        'how much does', 'how much is', 'how much would', 'how much do',
+        'how many', 'how many are', 'how many do',
+        # Logical evaluation — "is X true/valid/correct/possible"
+        'is it raining', 'is it possible', 'is it true', 'is it valid',
+        'is this true', 'is this correct', 'is this valid', 'is this logical',
+        'is this a', 'are all', 'are there', 'is there a reason',
+        # Deductive reasoning starters
+        'if it rains', 'if a then', 'if all', 'if every', 'if the',
+        'therefore', 'thus', 'hence', 'conclude', 'deduce', 'infer',
+        'logical', 'logically', 'fallacy', 'syllogism', 'deduction',
+        'prove that', 'disprove', 'true or false', 'correct or incorrect',
+        # Opinion / uncertainty questions — personal epistemic state
+        'do you think', 'what do you think', 'do you believe',
+        'something you believe', 'genuinely uncertain', 'are you certain',
+        'what would you say', 'in your opinion', 'your view',
     ]
 
     # Phase 6: keywords that suggest the user wants Rain to *act*, not just answer.
@@ -2165,6 +2182,14 @@ class AgentRouter:
 
         best = max(code_score, domain_score, reasoning_score)
         if best == 0:
+            # Short conversational exchanges (greetings, one-liners without a ?)
+            # → GENERAL.  Everything else — actual questions, statements to
+            # reason about — → LOGIC.  GENERAL should be a last resort, not the
+            # default for anything we can't keyword-match.
+            words = query_lower.split()
+            is_question = '?' in query or len(words) > 7
+            if is_question:
+                return AgentType.LOGIC
             return AgentType.GENERAL
         if _code_wins and code_score == best:
             return AgentType.DEV
@@ -3592,7 +3617,11 @@ class MultiAgentOrchestrator:
     # Reflection only needs a brief critique + one rating word — 512 tokens is generous.
     # Synthesis rewrites the full answer including code — 2048 tokens prevents truncation
     # on code generation tasks where the improved response may be longer than the primary.
+    # LOGIC gets a cap to prevent runaway chain-of-thought on qwen3.5:9b's extended
+    # thinking mode — without it, multi-step puzzles can burn 5+ minutes and timeout.
+    # 2048 tokens covers both the think block and a thorough answer for any reasoning task.
     _AGENT_NUM_PREDICT: Dict[AgentType, int] = {
+        AgentType.LOGIC:       2048,
         AgentType.REFLECTION:  512,
         AgentType.SYNTHESIZER: 2048,
     }
@@ -3791,8 +3820,12 @@ class MultiAgentOrchestrator:
 
             spinner_label = label or f"{agent.description} thinking..."
             stop_event, thread = self._start_spinner(spinner_label)
+            # 180 s covers even slow qwen3.5:9b reasoning passes (typical: 60–140s).
+            # 300 s was too generous — it let runaway chain-of-thought loops burn
+            # 5+ minutes before timing out.  With num_predict caps in place,
+            # any agent that exceeds 180 s is genuinely stuck, not just thinking.
             try:
-                with _urllib.urlopen(req, timeout=300) as resp:
+                with _urllib.urlopen(req, timeout=180) as resp:
                     data = _json.loads(resp.read())
                     return data["message"]["content"].strip()
             finally:
@@ -3819,8 +3852,16 @@ class MultiAgentOrchestrator:
         return (
             f"Original user query:\n{query}\n\n"
             f"Primary agent's response:\n{primary_response}\n\n"
-            f"Please critique this response according to your role. "
-            f"Be specific. List issues. Rate quality at the end: "
+            f"Critique this response. Be specific about any real issues.\n\n"
+            f"Rating guide — grade on accuracy and helpfulness ONLY:\n"
+            f"  EXCELLENT    — correct, clear, and complete for what was asked.\n"
+            f"  GOOD         — correct and useful; only minor wording or completeness gaps.\n"
+            f"  NEEDS_IMPROVEMENT — partially correct but has significant gaps, wrong reasoning, or misleading framing.\n"
+            f"  POOR         — factually wrong, or fails to answer the question at all.\n\n"
+            f"Important: A brief but correct answer is GOOD. A long but correct answer is also GOOD.\n"
+            f"Do NOT rate down for style, length, or formatting preferences.\n"
+            f"Only use NEEDS_IMPROVEMENT if there are actual errors or significant missing content that would mislead the user.\n\n"
+            f"End your critique with exactly one rating word on its own line: "
             f"EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR"
         )
 
@@ -3930,7 +3971,11 @@ class MultiAgentOrchestrator:
                 "i'm not certain", "it depends", "hard to say", "i'm unsure",
             ]
             hedge_count = sum(1 for h in hedges if h in lower)
-            base = 0.80 if len(response) > 200 else 0.68
+            # Flat base 0.78 regardless of length — brevity is not uncertainty.
+            # A one-sentence correct answer is not less confident than a 5-paragraph
+            # one. The old length penalty (0.68 for short) was causing synthesis to
+            # fire on perfectly good brief answers, adding 60+ seconds for no gain.
+            base = 0.78
             base = max(0.45, base - (hedge_count * 0.05))
             if '?' in response[-80:]:
                 base = max(0.45, base - 0.08)

@@ -236,22 +236,26 @@ class SkillLoader:
 
             # Tags (highest weight)
             for tag in skill.tags:
-                if tag.lower() in query_lower or query_lower in tag.lower():
+                tag_lower = tag.lower()
+                if tag_lower in query_lower or query_lower in tag_lower:
                     score += 3
                 else:
                     # partial match: individual words in multi-word tags
+                    # Use word-boundary regex so "rain" doesn't match "rains",
+                    # "training", etc. — prevents Rain's brand name from
+                    # spuriously matching weather verbs in reasoning questions.
                     for word in tag.replace('-', ' ').split():
-                        if word in query_lower:
+                        if re.search(r'\b' + re.escape(word.lower()) + r'\b', query_lower):
                             score += 1
 
-            # Name words
+            # Name words — word-boundary match to avoid brand-name collisions
             for word in skill.name.lower().replace('-', ' ').split():
-                if len(word) > 2 and word in query_lower:
+                if len(word) > 2 and re.search(r'\b' + re.escape(word) + r'\b', query_lower):
                     score += 2
 
-            # Slug words
+            # Slug words — same protection
             for word in skill.slug.replace('-', ' ').split():
-                if len(word) > 2 and word in query_lower:
+                if len(word) > 2 and re.search(r'\b' + re.escape(word) + r'\b', query_lower):
                     score += 2
 
             # Description words (lower weight, filter short words)
