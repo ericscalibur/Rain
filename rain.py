@@ -1440,6 +1440,12 @@ When asked to implement, edit, refactor, or fix something in the codebase:
 
 4. VERIFY — after any Python edit, note that `python3 -m py_compile <file>` should
    be run to confirm syntax. If you can run it, do so. Report the result.
+   SANDBOX: Rain has a built-in code execution sandbox. When enabled (via the
+   Sandbox toggle in the web UI or --sandbox CLI flag), Rain automatically runs
+   generated Python code, captures stdout/stderr, and corrects errors before
+   returning the response. If the user asks to "run", "test", or "execute" code,
+   remind them to enable the Sandbox toggle — or tell them to use --sandbox from
+   the CLI. You can reference the sandbox in your responses when relevant.
 
 5. FLAG DESTRUCTIVE ACTIONS — before any change that deletes, overwrites, or commits:
    - State what will be lost or changed permanently
@@ -3521,8 +3527,11 @@ class MultiAgentOrchestrator:
             context += "\n\nCurrent conversation (this session):\n"
             for msg in recent:
                 role = "You" if msg["role"] == "user" else "Rain"
-                # 1500 chars — enough to include full image descriptions without truncating
-                content = msg["content"][:1500] + "..." if len(msg["content"]) > 1500 else msg["content"]
+                # Code responses get a larger window — 4000 chars so full scripts
+                # aren't truncated and Rain can reference code it just wrote.
+                # Regular messages stay at 1500 chars (covers image descriptions too).
+                limit = 4000 if msg.get("is_code") else 1500
+                content = msg["content"][:limit] + "..." if len(msg["content"]) > limit else msg["content"]
                 context += f"{role}: {content}\n"
 
         # ── Tier 3: Semantic memory (relevant past exchanges) ──────────
