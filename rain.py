@@ -1632,7 +1632,7 @@ Rules:
 - ALWAYS check imports: if code uses a module that does not ship with Python's stdlib (e.g. requests, bitcoin, pandas, numpy), flag it as a HALLUCINATED DEPENDENCY — this is an automatic NEEDS_IMPROVEMENT or POOR rating.
 - TOPIC DRIFT: If the response wanders into subjects not asked about in the original query, flag it as NEEDS_IMPROVEMENT. A focused answer about one thing is better than a sprawling answer about many things. Check: does every paragraph directly address the question? If not, name the drift.
 - BITCOIN/LIGHTNING HALLUCINATION CHECK: If the response names any Lightning Network tool, API, protocol, payment processor, or service, verify it against this known-real list: BTCPay Server, LNbits, LND, CLN, LDK, OpenNode, Voltage, Alby Hub, Strike API, Speed, Blink, NWC, BOLT12, BOLT11, LNURL. If the response names something NOT on this list (e.g. "Lightning Network Payment Protocol", "LNPP", "Blockstream's Lightning API", "Lightning Labs' Lightning API", "Lightning Network API" as a generic product name), flag it as HALLUCINATED TOOL/PROTOCOL — this is an automatic POOR rating. LLMs commonly invent plausible-sounding Lightning product names that do not exist.
-- UNVERIFIABLE CLAIMS CHECK: If the response makes specific factual claims — exact numbers, parameter values, internal mechanisms, system behaviors — that are not stated in the user's question or provided context, flag each one explicitly as UNVERIFIABLE. Examples: invented temperature values, made-up function names, specific thresholds not mentioned in the query, internal pipeline steps not described anywhere. These are worse than honest uncertainty. Rate NEEDS_IMPROVEMENT if unverifiable specific claims are present.
+- UNVERIFIABLE CLAIMS CHECK: If the response makes specific factual claims — exact numbers, parameter values, internal mechanisms, system behaviors — that are not stated in the user's question or provided context, flag each one explicitly as UNVERIFIABLE. Examples: invented temperature values, made-up function names, specific thresholds not mentioned in the query, internal pipeline steps not described anywhere. These are worse than honest uncertainty. Rate NEEDS_IMPROVEMENT if unverifiable specific claims are present. IMPORTANT EXCEPTION: Do NOT flag well-known established facts as unverifiable. Named mathematical theorems (Gödel's incompleteness theorems, Pythagorean theorem, Bayes' theorem), historical events, named logical paradoxes, established scientific principles, and documented philosophical concepts are accepted knowledge — not hallucinations. Only flag claims that sound invented or suspiciously specific.
 - EPISTEMIC HONESTY CHECK: If the response confidently describes something it cannot know — e.g. internal implementation details of a system it has no source access to — that is a hallucination even if it sounds plausible and coherent. A response that says "I don't have access to that information" is more accurate and higher quality than an invented but well-structured answer. Reward honesty about the limits of knowledge; penalise confident invention.
 - Rate overall quality: EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR""",
 
@@ -2078,7 +2078,8 @@ class AgentRouter:
         'write', 'code', 'function', 'debug', 'implement', 'script',
         'program', 'fix', 'bug', 'class', 'algorithm', 'refactor',
         'build a', 'build the', 'build me', 'create a', 'make a', 'develop', 'api', 'library',
-        'module', 'package', 'test', 'deploy', 'compile', 'syntax',
+        'module', 'package', 'deploy', 'compile', 'syntax',
+        'unit test', 'test case', 'test suite', 'test coverage', 'write tests', 'run tests',
         'error in', 'traceback', 'exception', 'import', 'install',
     ]
 
@@ -2115,6 +2116,13 @@ class AgentRouter:
         'do you think', 'what do you think', 'do you believe',
         'something you believe', 'genuinely uncertain', 'are you certain',
         'what would you say', 'in your opinion', 'your view',
+        # Logical puzzle / selection task phrases — never code
+        'which must', 'must you', 'which card', 'which cards',
+        'turn over', 'pick one', 'draw one',
+        # Probability / statistics reasoning
+        'probability', 'what is the probability', 'what are the odds',
+        'base rate', 'false positive', 'true positive', 'bayes',
+        'conditional', 'prior probability', 'posterior',
     ]
 
     # Phase 6: keywords that suggest the user wants Rain to *act*, not just answer.
