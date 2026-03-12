@@ -1922,20 +1922,27 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             # version from a concurrent request.
             original_query_agent = _real_query_agent
 
+            import time as _time
+            from rain import AgentType as _AgentType
+            _stage_times = {"primary_start": _time.monotonic()}
+            reflection_model = _orchestrator.agents[_AgentType.REFLECTION].model_name
+
             def patched_query_agent(agent, prompt, label=None, include_memory=True, image_b64=None, token_callback=None):
-                from rain import AgentType as _AgentType
                 if agent.agent_type == _AgentType.REFLECTION:
-                    # Reflection is fast and internal — no streaming, just a progress note
-                    emit({"type": "progress", "message": "🔍 Reflection Agent reviewing..."})
+                    # Primary is done — emit timing before kicking off reflection
+                    elapsed = round(_time.monotonic() - _stage_times["primary_start"])
+                    emit({"type": "progress", "message": f"✓ Draft ready ({elapsed}s) — reflecting..."})
+                    emit({"type": "progress", "message": f"🔍 Reflection Agent reviewing... ({reflection_model})"})
                     return original_query_agent(agent, prompt, label=label,
                                                 include_memory=include_memory, image_b64=image_b64)
 
                 if agent.agent_type == _AgentType.SYNTHESIZER:
-                    # Clear the primary tokens already shown and stream the improved response
+                    _stage_times["synth_start"] = _time.monotonic()
                     emit({"type": "clear_response"})
-                    emit({"type": "progress", "message": "⚡ Synthesizer improving response..."})
+                    emit({"type": "progress", "message": "⚡ Synthesizer rewriting..."})
                 else:
-                    # Primary agent — announce which one is thinking, then stream
+                    # Primary agent — announce which one is thinking, then stream tokens
+                    _stage_times["primary_start"] = _time.monotonic()
                     emit({"type": "progress", "message": f"💭 {label or agent.description + ' thinking...'}"})
 
                 def token_cb(token):
@@ -1952,7 +1959,10 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             def patched_parse_rating(critique):
                 rating = original_parse_rating(critique)
-                emit({"type": "progress", "message": f"🔍 Reflection complete (rating: {rating})"})
+                if rating in ("NEEDS_IMPROVEMENT", "POOR"):
+                    emit({"type": "progress", "message": f"🔍 Reflection: {rating.lower().replace('_', ' ')} — synthesizing..."})
+                else:
+                    emit({"type": "progress", "message": f"🔍 Reflection: {rating.lower()} ✓"})
                 return rating
 
             _orchestrator._parse_reflection_rating = patched_parse_rating

@@ -1373,6 +1373,11 @@
                 border: 1px solid rgba(179, 136, 255, 0.3);
                 color: var(--purple);
             }
+            .freshness-badge.self-knowledge {
+                background: rgba(32, 201, 196, 0.08);
+                border: 1px solid rgba(32, 201, 196, 0.3);
+                color: #20c9c4;
+            }
 
             /* ── Phase 7C: Project index panel ────────────────────── */
             .project-item {
@@ -1929,6 +1934,13 @@
                 currentProgress: null,
             };
 
+            // ── Streaming state ────────────────────────────────────────────────────
+            // _streamingBubble: the DOM wrapper created on first token event.
+            // _streamingContent: accumulated raw text for the current response.
+            // Both are reset at the start of every send so aborts are clean.
+            let _streamingBubble = null;
+            let _streamingContent = "";
+
             // ── DOM refs ───────────────────────────────────────────────────────────
             const messagesEl = document.getElementById("messages");
             const emptyState = document.getElementById("empty-state");
@@ -2161,14 +2173,17 @@
                                 : "") +
                             (data.errors ? ` · ${data.errors} error(s)` : "") +
                             ` in ${data.duration_s}s`;
+                        return true;
                     } else {
                         indexStatus.style.color = "#f87171";
                         indexStatus.textContent =
                             data.detail || "Indexing failed";
+                        return false;
                     }
                 } catch (e) {
                     indexStatus.style.color = "#f87171";
                     indexStatus.textContent = e.message;
+                    return false;
                 }
             }
 
@@ -2177,6 +2192,7 @@
                 indexForceCheckbox.checked = false;
                 indexStatus.style.display = "none";
                 indexStatus.textContent = "";
+                indexModalCancel.textContent = "Cancel";
                 indexModalOverlay.classList.add("visible");
                 indexPathInput.focus();
             }
@@ -2190,10 +2206,22 @@
                 if (!path) return;
                 indexModalSave.disabled = true;
                 indexModalSave.textContent = "⏳ Indexing…";
-                await indexProjectPath(path, indexForceCheckbox.checked);
+                indexModalCancel.disabled = true;
+                const success = await indexProjectPath(
+                    path,
+                    indexForceCheckbox.checked,
+                );
                 indexModalSave.disabled = false;
                 indexModalSave.textContent = "Index Project";
+                indexModalCancel.disabled = false;
+                indexModalCancel.textContent = "Close";
                 await loadProjects();
+                if (success) {
+                    // Auto-close after 2s — user can see the result then it dismisses
+                    setTimeout(() => {
+                        closeIndexModal();
+                    }, 2000);
+                }
             }
 
             indexProjectBtn.addEventListener("click", openIndexModal);
@@ -2517,6 +2545,10 @@
                 chatInput.value = "";
                 autoResize();
 
+                // Reset streaming state for this new request
+                _streamingBubble = null;
+                _streamingContent = "";
+
                 setThinkingState(true);
                 setStatus("thinking", "thinking...");
 
@@ -2593,9 +2625,34 @@
                             event.status === "ok" ? "done" : "active",
                         );
                         break;
+                    case "token":
+                        // Buffer silently — raw tokens aren't shown until the full
+                        // response is finalized. The progress lines show pipeline
+                        // status instead. Final content arrives in the "done" event.
+                        _streamingContent += event.content;
+                        break;
+                    case "clear_response":
+                        // Synthesis is rewriting — wipe primary tokens from the bubble
+                        _streamingContent = "";
+                        if (_streamingBubble) {
+                            updateStreamingBubble(_streamingBubble, "");
+                        }
+                        break;
                     case "done":
                         removeProgress(progressEl);
-                        appendRainMessage(event.content, event);
+                        if (_streamingBubble) {
+                            // Finalize the streaming bubble with markdown + badges + feedback
+                            finalizeRainMessage(
+                                _streamingBubble,
+                                event.content,
+                                event,
+                            );
+                            _streamingBubble = null;
+                            _streamingContent = "";
+                        } else {
+                            // No tokens were streamed (react_loop, error fallback) — render normally
+                            appendRainMessage(event.content, event);
+                        }
                         loadSessions(); // refresh sidebar
                         setStatus("ok", _lastModel || "ready");
                         break;
@@ -2633,6 +2690,177 @@
             }
 
             let _lastModel = "";
+
+            // ── Streaming bubble helpers ───────────────────────────────────────────
+
+            function createStreamingBubble() {
+                emptyState.style.display = "none";
+                const wrapper = document.createElement("div");
+                wrapper.className = "msg-wrapper";
+                wrapper.innerHTML = `
+    <div class="msg">
+      <div class="msg-header">
+        <span class="msg-role rain">Rain</span>
+      </div>
+      <div class="msg-body streaming-body"></div>
+    </div>`;
+                messagesEl.appendChild(wrapper);
+                scrollToBottom();
+                return wrapper;
+            }
+
+            function updateStreamingBubble(wrapper, text) {
+                const body = wrapper.querySelector(".msg-body");
+                if (!body) return;
+                // Show raw text while streaming — avoids expensive markdown re-parse
+                // on every token. On `done`, finalizeRainMessage renders full markdown.
+                body.textContent = text;
+                scrollToBottom();
+            }
+
+            function finalizeRainMessage(wrapper, content, meta) {
+                // Replace the streaming body with fully rendered markdown + badges + feedback.
+                // The wrapper is already in the DOM — we just update its .msg contents.
+                const agentTag = meta.agent_type
+                    ? `<span class="msg-agent-tag">${agentLabel(meta.agent_type)}</span>`
+                    : "";
+
+                const metaStr = meta.confidence
+                    ? `<span class="conf-badge">conf ${(meta.confidence * 100).toFixed(0)}%</span>
+       <span class="msg-meta">${meta.duration ? meta.duration + "s" : ""}</span>`
+                    : "";
+
+                let sandboxBadge = "";
+                if (meta.sandbox) {
+                    const { all_ok, verified, total, network, long_running } =
+                        meta.sandbox;
+                    if (long_running && total === 0) {
+                        sandboxBadge = `<div class="sandbox-badge network">⏱️ long-running script — not sandboxable</div>`;
+                    } else if (network && total === 0) {
+                        sandboxBadge = `<div class="sandbox-badge network">🌐 network required — not sandboxable</div>`;
+                    } else if ((network || long_running) && total > 0) {
+                        const skipped =
+                            network && long_running
+                                ? "🌐 ⏱️ blocks skipped"
+                                : network
+                                  ? "🌐 network block skipped"
+                                  : "⏱️ long-running block skipped";
+                        sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">
+      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified · ${skipped}
+    </div>`;
+                    } else {
+                        sandboxBadge = `<div class="sandbox-badge ${all_ok ? "ok" : "bad"}">
+      ${all_ok ? "✅" : "⚠️"} sandbox: ${verified}/${total} verified
+    </div>`;
+                    }
+                }
+
+                const searchBadge = meta.search_results
+                    ? `<div class="search-badge">🌐 web search · ${meta.search_results} result${meta.search_results !== 1 ? "s" : ""} retrieved</div>`
+                    : "";
+
+                const visionBadge = meta.vision_used
+                    ? `<span class="vision-badge">👁️ vision</span>`
+                    : "";
+
+                let freshnessBadges = "";
+                const sources = meta.data_sources || [];
+                if (sources.includes("live_api"))
+                    freshnessBadges += `<span class="freshness-badge live">⚡ live</span>`;
+                if (sources.includes("web_search"))
+                    freshnessBadges += `<span class="freshness-badge search">🌐 web</span>`;
+                if (sources.includes("project_index"))
+                    freshnessBadges += `<span class="freshness-badge indexed">📂 indexed</span>`;
+                if (sources.includes("knowledge_graph"))
+                    freshnessBadges += `<span class="freshness-badge graph">🧠 graph</span>`;
+                if (sources.includes("rain_md"))
+                    freshnessBadges += `<span class="freshness-badge self-knowledge">📖 self-knowledge</span>`;
+                if (sources.length === 1 && sources[0] === "training_data")
+                    freshnessBadges += `<span class="freshness-badge training">💾 training data</span>`;
+
+                const msg = wrapper.querySelector(".msg");
+                msg.innerHTML = `
+      <div class="msg-header">
+        <span class="msg-role rain">Rain</span>
+        ${agentTag}
+        ${visionBadge}
+        ${freshnessBadges}
+        ${metaStr}
+      </div>
+      <div class="msg-body">${renderMarkdown(content)}</div>
+      ${sandboxBadge}${searchBadge}`;
+
+                // Feedback UI
+                const capturedQuery = state.currentQuery || "";
+                const feedbackDiv = document.createElement("div");
+                feedbackDiv.className = "msg-feedback";
+                feedbackDiv.innerHTML = `
+                    <button class="feedback-btn good" title="Good response">👍</button>
+                    <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>`;
+
+                const correctionDiv = document.createElement("div");
+                correctionDiv.className = "feedback-correction";
+                correctionDiv.style.display = "none";
+                correctionDiv.innerHTML = `
+                    <div class="correction-label">What was wrong? Writing a correction trains Rain directly — even one sentence helps.</div>
+                    <textarea class="correction-input" placeholder="The correct answer is... / It should have said... / It missed that..."></textarea>
+                    <div class="correction-actions">
+                        <button class="correction-skip">Skip (still logged)</button>
+                        <button class="correction-submit">Save &amp; train</button>
+                    </div>`;
+
+                msg.appendChild(feedbackDiv);
+                msg.appendChild(correctionDiv);
+
+                feedbackDiv
+                    .querySelector(".feedback-btn.good")
+                    .addEventListener("click", async () => {
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "good",
+                            null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">✅ Glad it helped</span>`;
+                    });
+                feedbackDiv
+                    .querySelector(".feedback-btn.bad")
+                    .addEventListener("click", () => {
+                        correctionDiv.style.display = "block";
+                        correctionDiv
+                            .querySelector(".correction-input")
+                            .focus();
+                    });
+                correctionDiv
+                    .querySelector(".correction-skip")
+                    .addEventListener("click", async () => {
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "bad",
+                            null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">📝 Noted</span>`;
+                        correctionDiv.style.display = "none";
+                    });
+                correctionDiv
+                    .querySelector(".correction-submit")
+                    .addEventListener("click", async () => {
+                        const correction = correctionDiv
+                            .querySelector(".correction-input")
+                            .value.trim();
+                        await submitFeedback(
+                            capturedQuery,
+                            content,
+                            "bad",
+                            correction || null,
+                        );
+                        feedbackDiv.innerHTML = `<span class="feedback-done">📝 Correction saved — Rain will learn from this</span>`;
+                        correctionDiv.style.display = "none";
+                    });
+
+                scrollToBottom();
+            }
 
             function appendRainMessage(content, meta = {}) {
                 emptyState.style.display = "none";
@@ -2698,6 +2926,9 @@
                 }
                 if (sources.includes("knowledge_graph")) {
                     freshnessBadges += `<span class="freshness-badge graph">🧠 graph</span>`;
+                }
+                if (sources.includes("rain_md")) {
+                    freshnessBadges += `<span class="freshness-badge self-knowledge">📖 self-knowledge</span>`;
                 }
                 if (sources.length === 1 && sources[0] === "training_data") {
                     freshnessBadges += `<span class="freshness-badge training">💾 training data</span>`;
@@ -3423,6 +3654,10 @@
                     setStatus("thinking", "thinking...");
                     const progressEl = appendProgress();
                     state.currentProgress = progressEl;
+
+                    // Reset streaming state for this new image request
+                    _streamingBubble = null;
+                    _streamingContent = "";
 
                     try {
                         _abortController = new AbortController();

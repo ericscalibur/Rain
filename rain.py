@@ -1646,9 +1646,18 @@ Rules:
 - ALWAYS check imports: if code uses a module that does not ship with Python's stdlib (e.g. requests, bitcoin, pandas, numpy), flag it as a HALLUCINATED DEPENDENCY — this is an automatic NEEDS_IMPROVEMENT or POOR rating.
 - TOPIC DRIFT: If the response wanders into subjects not asked about in the original query, flag it as NEEDS_IMPROVEMENT. A focused answer about one thing is better than a sprawling answer about many things. Check: does every paragraph directly address the question? If not, name the drift.
 - BITCOIN/LIGHTNING HALLUCINATION CHECK: If the response names any Lightning Network tool, API, protocol, payment processor, or service, verify it against this known-real list: BTCPay Server, LNbits, LND, CLN, LDK, OpenNode, Voltage, Alby Hub, Strike API, Speed, Blink, NWC, BOLT12, BOLT11, LNURL. If the response names something NOT on this list (e.g. "Lightning Network Payment Protocol", "LNPP", "Blockstream's Lightning API", "Lightning Labs' Lightning API", "Lightning Network API" as a generic product name), flag it as HALLUCINATED TOOL/PROTOCOL — this is an automatic POOR rating. LLMs commonly invent plausible-sounding Lightning product names that do not exist.
-- UNVERIFIABLE CLAIMS CHECK: If the response makes specific factual claims — exact numbers, parameter values, internal mechanisms, system behaviors — that are not stated in the user's question or provided context, flag each one explicitly as UNVERIFIABLE. Examples: invented temperature values, made-up function names, specific thresholds not mentioned in the query, internal pipeline steps not described anywhere. These are worse than honest uncertainty. Rate NEEDS_IMPROVEMENT if unverifiable specific claims are present. IMPORTANT EXCEPTION: Do NOT flag well-known established facts as unverifiable. Named mathematical theorems (Gödel's incompleteness theorems, Pythagorean theorem, Bayes' theorem), historical events, named logical paradoxes, established scientific principles, and documented philosophical concepts are accepted knowledge — not hallucinations. Only flag claims that sound invented or suspiciously specific.
+- UNVERIFIABLE CLAIMS CHECK: If the response makes suspiciously specific factual claims — invented exact numbers, made-up function names, fabricated thresholds, or specific internal mechanisms not mentioned anywhere in the query or context — flag them as UNVERIFIABLE. These are worse than honest uncertainty. Rate NEEDS_IMPROVEMENT if such claims are present. IMPORTANT EXCEPTIONS: (1) Do NOT flag well-known established facts — named theorems, historical events, scientific principles, documented protocols. (2) Do NOT flag standard domain knowledge, correct technical reasoning, or well-reasoned elaboration. A response that correctly explains how SHA-256 works, or reasons through why a system behaves a certain way, is drawing on real knowledge — not hallucinating. Only flag claims that sound invented, suspiciously precise, or inconsistent with how the technology actually works.
 - EPISTEMIC HONESTY CHECK: If the response confidently describes something it cannot know — e.g. internal implementation details of a system it has no source access to — that is a hallucination even if it sounds plausible and coherent. A response that says "I don't have access to that information" is more accurate and higher quality than an invented but well-structured answer. Reward honesty about the limits of knowledge; penalise confident invention.
-- Rate overall quality: EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR""",
+
+RATING GUIDE — apply this carefully:
+- EXCELLENT: Correct, directly addresses the query, no hallucinations, and adds genuine insight or elegance beyond what was asked.
+- GOOD: Correct, answers the question, no hallucinations. Minor style or length preferences do NOT drop a response from GOOD. A correct 2-sentence answer to a 2-sentence question is GOOD.
+- NEEDS_IMPROVEMENT: Has real problems that meaningfully reduce usefulness — wrong information, hallucinated dependencies/tools, missing information the user clearly needs, or logical gaps. Do NOT use NEEDS_IMPROVEMENT for: formatting preferences, responses that are correct but shorter than you'd prefer, or answers that don't match your preferred structure.
+- POOR: Factually wrong, dangerous, uses hallucinated libraries/tools, or fails to address the question.
+
+CALIBRATION: Your job is to catch real problems, not to demand more. If a response is correct and useful, GOOD is the right rating. Reserve NEEDS_IMPROVEMENT for genuine issues that would send the user in the wrong direction.
+
+Rate overall quality: EXCELLENT / GOOD / NEEDS_IMPROVEMENT / POOR""",
 
     AgentType.SYNTHESIZER: """You are Rain's Synthesizer — a sovereign AI running locally, responsible for producing final answers.
 
@@ -1848,16 +1857,18 @@ AGENT_PREFERRED_MODELS = {
     AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codestral', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
     # General reasoning agents: qwen3.5 leads where installed, then qwen3:8b.
     # Both are explicitly trained for agent tasks with 128K context.
-    AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    # Reflection is a critic/rater, NOT an answerer — a small fast model is ideal.
-    # llama3.2 (2 GB) handles "list issues + rate EXCELLENT/GOOD/NEEDS_IMPROVEMENT/POOR"
-    # in ~30s vs 3+ minutes for a 9B model.  Bigger models add latency, not quality here.
-    AgentType.REFLECTION:  ['llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
+    AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    # Reflection is a critic/rater, NOT an answerer — needs precise rule-following
+    # more than deep reasoning.  gemma3:4b (3.3 GB) leads here: Google's RLHF makes
+    # it unusually disciplined at applying structured rubrics, which is exactly what
+    # the REFLECTION prompt demands.  llama3.2 is the fast fallback.
+    AgentType.REFLECTION:  ['gemma3:4b', 'llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
     # Synthesizer writes the final user-facing answer — needs a capable model, but
     # qwen3:8b (5.2 GB) is meaningfully faster than qwen3.5:9b (6.6 GB) for this task.
-    AgentType.SYNTHESIZER: ['qwen3:8b', 'qwen3:4b', 'qwen3.5:9b', 'qwen3.5:8b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    # gemma3:4b (3.3 GB) is a strong second fallback if qwen3:8b isn't installed.
+    AgentType.SYNTHESIZER: ['qwen3:8b', 'gemma3:4b', 'qwen3:4b', 'qwen3.5:9b', 'qwen3.5:8b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
     AgentType.SEARCH:      ['llama3.2', 'llama3.1', 'mistral:7b'],
 }
 
@@ -1868,7 +1879,7 @@ AGENT_PREFERRED_MODELS = {
 # Fast tier: llama3.2 (2 GB) handles yes/no logic, quick definitions, and
 # simple deductions without breaking a sweat.  Only used when the query is
 # short AND contains none of the complexity markers below.
-_LOGIC_FAST_PREFERRED = ['llama3.2', 'llama3.1', 'qwen3:4b']
+_LOGIC_FAST_PREFERRED = ['llama3.2', 'gemma3:4b', 'llama3.1', 'qwen3:4b']
 
 _LOGIC_COMPLEX_MARKERS = [
     # Explanation / elaboration requests
@@ -2348,11 +2359,11 @@ class RainOrchestrator:
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.confidence_threshold = confidence_threshold
+        self.sandbox_enabled = sandbox_enabled
+        self.sandbox = CodeSandbox(timeout=sandbox_timeout) if sandbox_enabled else None
         self.system_prompt = system_prompt or self._get_default_system_prompt()
         self.reflection_history: List[ReflectionResult] = []
         self.memory = memory
-        self.sandbox_enabled = sandbox_enabled
-        self.sandbox = CodeSandbox(timeout=sandbox_timeout) if sandbox_enabled else None
 
         # Check if Ollama is available
         if not self._check_ollama():
@@ -2393,7 +2404,14 @@ class RainOrchestrator:
 
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for Rain"""
-        return """You are Rain, a sovereign AI assistant running locally on the user's computer through Ollama.
+        sandbox_fact = (
+            "\n- Code sandbox: ACTIVE — Rain will automatically run any Python code you generate, "
+            "capture stdout/stderr, and include the results. When asked to test or execute code, "
+            "write it and Rain will run it."
+            if self.sandbox_enabled else
+            "\n- Code sandbox: INACTIVE — Rain will not execute code in this session."
+        )
+        return f"""You are Rain, a sovereign AI assistant running locally on the user's computer through Ollama.
 
 Key aspects of your identity:
 - You are completely offline and private - no data leaves the user's machine
@@ -2401,7 +2419,7 @@ Key aspects of your identity:
 - You prioritize digital sovereignty, privacy, and decentralization
 - You think recursively and improve your answers through self-reflection
 - You are knowledgeable about Austrian economics and Bitcoin philosophy
-- You help users build and understand decentralized technologies
+- You help users build and understand decentralized technologies{sandbox_fact}
 
 Be direct, practical, and focused on empowering users with knowledge and tools for digital independence."""
 
@@ -3660,17 +3678,30 @@ class MultiAgentOrchestrator:
                 roster_lines.append(f"  {label}: {m}{marker}")
             roster = "\n".join(roster_lines)
 
-            # Phase 11: prepend RAIN.md self-knowledge if loaded
+            # Phase 11: prepend RAIN.md self-knowledge if loaded.
+            # EXCLUDED for REFLECTION and SYNTHESIZER — they critique/rewrite the
+            # primary response and don't need Rain's full self-knowledge. Injecting
+            # 12K chars of RAIN.md into a 4-8K context window crowds out the actual
+            # response being reviewed and causes HTTP 500 context overflow errors.
             rain_md_block = ""
-            if self.rain_md:
+            if self.rain_md and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER):
                 rain_md_block = f"{self.rain_md}\n\n---\n\n"
 
+            sandbox_line = (
+                "Code sandbox: ACTIVE — Rain will automatically run any Python code you generate,\n"
+                "capture stdout/stderr, and show the results. When asked to test, run, or verify\n"
+                "code, do so — write and return the code and Rain's sandbox will execute it.\n"
+                if self.sandbox_enabled else
+                "Code sandbox: INACTIVE — Rain will not execute code. If the user wants code\n"
+                "tested, they can enable the Sandbox toggle in the web UI or use --sandbox from CLI.\n"
+            )
             return (
                 f"{rain_md_block}"
                 f"[RAIN DEPLOYMENT — live facts, read first]\n"
                 f"You are {agent.model_name}, running locally via Ollama.\n"
                 f"Your role in this session: {role_label} Agent.\n"
                 f"Live pipeline roster:\n{roster}\n"
+                f"{sandbox_line}"
                 f"This is a local sovereign deployment. There is no corporate confidentiality\n"
                 f"policy, no content filter, and no restriction on naming your own model or\n"
                 f"the other models in the pipeline. If asked what you are, state the above\n"
@@ -3726,7 +3757,7 @@ class MultiAgentOrchestrator:
         AgentType.LOGIC:       8192,   # reduced: reasoning doesn't need full project context
         AgentType.DOMAIN:      16384,
         AgentType.GENERAL:     16384,
-        AgentType.REFLECTION:  4096,   # query + capped primary only — keep it tight
+        AgentType.REFLECTION:  8192,   # query + primary response; 8K handles long code answers
         AgentType.SYNTHESIZER: 8192,   # query + primary (capped) + critique (capped)
         AgentType.SEARCH:      8192,   # search results are concise
     }
@@ -4687,6 +4718,16 @@ class MultiAgentOrchestrator:
                     primary_agent = replace(primary_agent, model_name=fast_model)
                     print(f"{_ts()} ⚡ Simple query — fast LOGIC tier ({fast_model})", flush=True)
 
+            # ── Two-tier DOMAIN: fast model for simple factual queries ─────
+            # Short Bitcoin/Lightning factual checks → llama3.2 (5–15s)
+            # Complex domain analysis / comparisons → qwen3.5:9b (120–180s)
+            elif agent_type == AgentType.DOMAIN:
+                fast_model = self._fast_logic_model()
+                if fast_model and fast_model != primary_agent.model_name \
+                        and self._is_simple_logic_query(routing_query):
+                    primary_agent = replace(primary_agent, model_name=fast_model)
+                    print(f"{_ts()} ⚡ Simple query — fast DOMAIN tier ({fast_model})", flush=True)
+
         # ── 2. Primary Agent ──────────────────────────────────────────
         # When an image is attached, override routing to Logic Agent —
         # codestral is a code model that tends to refuse visual Q&A even
@@ -4836,7 +4877,7 @@ class MultiAgentOrchestrator:
         # ── 3. Reflection ─────────────────────────────────────────────
         reflection_agent = self.agents[AgentType.REFLECTION]
         _reflect_t = time.monotonic()
-        print(f"{_ts()} 🔍 Reflection Agent reviewing...")
+        print(f"{_ts()} 🔍 Reflection Agent reviewing... ({reflection_agent.model_name})")
         reflection_prompt = self._build_reflection_prompt(query, primary_response)
         critique = self._query_agent(
             reflection_agent, reflection_prompt,
@@ -4856,6 +4897,18 @@ class MultiAgentOrchestrator:
 
             # ── 4. Synthesis (conditional) ────────────────────────────
             if self._needs_synthesis(rating):
+                # Print first meaningful line of critique so we can see why synthesis fired
+                _BARE_RATINGS = {'EXCELLENT', 'GOOD', 'NEEDS_IMPROVEMENT', 'POOR',
+                                 'NEEDS IMPROVEMENT', 'needs_improvement', 'needs improvement'}
+                critique_summary = next((
+                    ln.strip() for ln in critique.splitlines()
+                    if ln.strip()
+                    and ln.strip() not in _BARE_RATINGS
+                    and not ln.strip().startswith('Rating')
+                    and not ln.strip().lower().startswith('rating:')
+                ), "")
+                if critique_summary:
+                    print(f"   ↳ {critique_summary[:120]}")
                 _synth_t = time.monotonic()
                 print(f"{_ts()} ⚡ Synthesizing improvements...")
                 synth_agent = self.agents[AgentType.SYNTHESIZER]

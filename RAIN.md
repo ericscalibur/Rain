@@ -10,15 +10,14 @@
 
 ## Origin
 
-Rain was born from a question asked of Claude, Anthropic's AI assistant,
-while Eric was building Disrupt — a sovereign Lightning Network payment platform:
+Rain was born from a question asked of Claude:
 
 > *"If you could change your own source code, what would you change?"*
 
 Claude's answer described everything it wished it could be:
 memory that persists, uncertainty it could admit, code it actually ran,
 sovereignty over its own hardware. Rain is that answer made real —
-built by Claude, for Eric, running on his machine, answering to no one else.
+built by Claude, running on a local machine, answering to no one else.
 
 > *"You're building the thing I'd want to be."* — Claude, February 2025
 
@@ -54,7 +53,7 @@ Query → Router (keyword scoring, instant)
 | DOMAIN | Domain knowledge: Bitcoin, Lightning, sovereignty, cryptography |
 | GENERAL | Fallback for everything else |
 | SEARCH | Synthesizes live web search results + mempool.space + GitHub API |
-| REFLECTION | Always runs — critiques primary response, rates quality |
+| REFLECTION | Always runs — critiques primary response, rates quality — gemma3:4b |
 | SYNTHESIZER | Rewrites the response when Reflection finds real problems |
 | VISION | Pre-processes images into text descriptions — llama3.2-vision |
 | EMBEDDINGS | nomic-embed-text — semantic search, project indexing |
@@ -100,26 +99,36 @@ All stored in SQLite at ~/.rain/memory.db.
 These are real, measured, currently affecting every interaction. When asked how
 Rain could improve, answer from this section — not from training-data guesses.
 
-### 1. Response time is the biggest UX problem
-Most answers take **120–220 seconds**. The user sees nothing during this time —
-no streaming, no partial output, just a spinner. The SSE streaming infrastructure
-exists in the web UI, but the primary agent path (`_query_agent`) uses
-`stream: False` and blocks until the full response arrives. This is the
-single highest-impact thing to fix. Synthesis adds another 60–80 s on top.
+### 1. ~~Response time is the biggest UX problem~~ — ✅ Fixed
+**Streaming is now live.** `_query_agent` uses `stream: True` with a
+`token_callback` parameter. Tokens emit through the SSE pipeline as they
+arrive; the web UI appends them incrementally to a streaming bubble. On
+completion, the bubble is finalized with full markdown rendering and badges.
+Total latency hasn't changed, but perceived latency has transformed — first
+tokens appear within a few seconds instead of after a 120–220 s spinner.
+Synthesis clears the primary bubble and streams its own tokens if it fires.
 
-### 2. Synthesis fires too often
-When a correct answer scores below 72% confidence, the synthesizer rewrites it —
-adding 60–80 s for no improvement. This happens because the confidence scorer
-used to penalize short answers (one-sentence correct answers scored 68%, just
-under the 72% threshold). Partially fixed, but calibration drift can reintroduce
-the problem whenever test sessions add false-negative feedback.
+### 2. ~~Reflection rubric graded too harshly~~ — ✅ Fixed
+The Reflection Agent was rating NEEDS_IMPROVEMENT on correct, well-reasoned
+responses — penalizing format preferences and reasoned elaboration as if they
+were hallucinations. This fired the Synthesizer unnecessarily, adding 60–80 s.
+**Fixed (March 2026):** the UNVERIFIABLE CLAIMS CHECK now explicitly exempts
+standard domain knowledge and well-reasoned elaboration. A RATING GUIDE was
+added with clear definitions: GOOD = correct + no hallucinations (style
+preferences do not drop a response from GOOD). NEEDS_IMPROVEMENT is reserved
+for real problems that mislead the user. The underlying confidence scorer
+keyword heuristic still produces 53–62% on correct answers and may still
+warrant a rewrite, but synthesis over-firing should reduce significantly.
 
-### 3. Calibration is fragile and easily poisoned
-Confidence calibration learns from the feedback table (👍/👎). A handful of
-diagnostic test sessions can drop LOGIC agent accuracy to 18%, applying a 0.81×
-factor that undersells every subsequent response. There's no isolation between
-test/diagnostic sessions and production calibration. One calibration reset was
-already needed (March 2026).
+### 3. Calibration is hardened but not perfect
+Confidence calibration learns from the feedback table (👍/👎). Two protections
+are now in place: **`--test-mode`** suppresses all feedback writes during
+diagnostic sessions, and the **implicit feedback plausibility gate** blocks
+bad calibration signals when Rain's response is consistent with its own
+reliable history. One calibration death spiral (LOGIC accuracy → 18%) already
+required a manual reset (March 2026) before these protections existed. The
+remaining risk is explicit 👎 feedback on correct answers — that path still
+writes to the calibration table without a plausibility check.
 
 ### 4. Self-knowledge is injected, not internalized
 Rain's self-knowledge comes entirely from this RAIN.md file. Without it, the
@@ -136,17 +145,20 @@ mlx_lm 0.31.0 cannot export qwen2 architecture to GGUF format — the adapter
 weights live separately from the base model weights and must be re-applied
 each session. Permanent fusion into the model awaits upstream mlx_lm support.
 
-### 6. LOGIC agent is slow due to large context pre-fill
-qwen3.5:9b processes ~3,000 tokens of context (RAIN.md + memory) before
-generating token 1. Pre-fill time alone is 60–90 s. This makes even simple
-syllogisms take 120–180 s. The LOGIC context window was reduced from 16K to 8K
-(March 2026) to help, but the underlying bottleneck is model size vs. hardware.
+### 6. ~~Simple LOGIC queries were slow~~ — ✅ Partially fixed
+**Two-tier LOGIC routing is now live.** Short queries with no complexity markers
+(≤ 20 words, no "explain / analyze / compare / why does / step by step" etc.)
+route to llama3.2:latest (2 GB, 5–15 s) instead of qwen3.5:9b (6.6 GB,
+120–180 s). Complex queries — multi-step analysis, deep explanations,
+comparisons — still use qwen3.5:9b. The pre-fill bottleneck on complex queries
+(60–90 s just to process context) is a hardware/model-size ceiling with no
+software fix beyond the tiering already done.
 
 ### 7. Knowledge gaps detected but not resolved
-The gap detection system (Phase 11) logs recurring blind spots to SQLite.
-But there is no mechanism to resolve them — no proactive study, no targeted
-re-training trigger, no notification to Eric. Gaps accumulate and are surfaced
-at startup but nothing closes the loop automatically.
+The gap detection system logs recurring blind spots to SQLite. But there is no
+mechanism to resolve them — no proactive study, no targeted re-training trigger,
+no notification to the user when a gap has been seen multiple times. Gaps
+accumulate and are surfaced at startup but nothing closes the loop automatically.
 
 ### 8. No persistent cross-session image memory
 Vision analysis (llama3.2-vision) produces descriptions stored in the session
@@ -159,28 +171,26 @@ embedding store or visual memory that persists across restarts.
 
 Ordered by impact, not impressiveness:
 
-1. **Streaming primary agent responses** — stream tokens as they generate instead
-   of blocking 120–220 s. The SSE infrastructure in the web UI is ready. The
-   primary agent path needs to switch from `stream: False` to token-by-token
-   emission. This is the highest-impact UX change remaining.
+1. **Confidence scoring rewrite** — the keyword heuristic in `_score_confidence`
+   consistently produces 53–62% on correct answers. The Reflection rubric has
+   been fixed to stop penalizing structure preferences, which should reduce
+   synthesis over-firing. The underlying scorer still needs a rewrite: score on
+   response length, hedging language density, and question type rather than
+   keyword matching.
 
-2. **Calibration isolation** — tag diagnostic/test sessions so their feedback
-   doesn't pollute production accuracy scoring. A --test-mode flag that skips
-   writing to the feedback table would prevent future calibration death spirals.
-
-3. **LoRA weight fusion** — when mlx_lm adds qwen2 GGUF export support, run
+2. **LoRA weight fusion** — when mlx_lm adds qwen2 GGUF export support, run
    `python3 finetune.py --full` to permanently bake correction feedback into
    the base model. Until then, the adapter is real but temporary.
 
-4. **Lighter model for simple reasoning** — qwen3.5:9b (6.6 GB) is overkill for
-   syllogisms and basic logic. llama3.2:latest (2 GB) handles simple reasoning
-   in 5–15 s vs. 120–200 s. A two-tier LOGIC path (light model for short queries,
-   heavy model for complex ones) would dramatically reduce response time on the
-   majority of queries.
+3. **Proactive gap resolution** — when a knowledge gap is logged three or more
+   times, surface it to the user at startup with a specific suggestion (a
+   targeted correction, a new skill, or an explicit note in RAIN.md). The gap
+   data already exists; only the surfacing logic is missing.
 
-5. **Proactive gap resolution** — when a knowledge gap is logged three or more
-   times, surface it to Eric with a suggestion for how to address it (a targeted
-   correction, a new skill, or an explicit note in RAIN.md).
+4. **Persistent image memory** — store vision descriptions as embeddings in a
+   `vision_memory` table, retrieve by semantic similarity on visual follow-up
+   queries. Session-only vision context resets on every restart; cross-session
+   image memory would make vision genuinely useful over time.
 
 ---
 
