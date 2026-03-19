@@ -14,8 +14,10 @@ if [ ! -d ".venv" ]; then
 fi
 
 echo ""
+LOCAL_IP=$(hostname -I | awk '{print $1}')
 echo "  ⛈️  Rain Web Interface  ⛈️"
-echo "  http://localhost:7734"
+echo "  Local:   http://localhost:7734"
+echo "  Network: http://${LOCAL_IP}:7734"
 echo ""
 
 exec .venv/bin/python server.py

@@ -2343,8 +2343,6 @@
                     agentList.innerHTML = "";
 
                     for (const agent of data.roster) {
-                        if (["reflection", "synthesizer"].includes(agent.type))
-                            continue;
                         const div = document.createElement("div");
                         div.className = "agent-item";
                         div.innerHTML = `
@@ -2390,6 +2388,7 @@
                         reflection: "Reflection",
                         synthesizer: "Synthesizer",
                         general: "General",
+                        search: "Search Agent",
                     }[type] || type
                 );
             }
