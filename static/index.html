@@ -1304,6 +1304,52 @@
                 color: var(--accent);
             }
 
+            /* ── Mic / Voice Dictate ──────────────────────────────── */
+            #mic-btn {
+                background: none;
+                border: none;
+                color: var(--text-3);
+                cursor: pointer;
+                padding: 4px;
+                display: flex;
+                align-items: center;
+                transition: color 0.15s;
+                flex-shrink: 0;
+            }
+            #mic-btn:hover {
+                color: var(--accent);
+            }
+            #mic-btn.recording {
+                color: var(--red);
+                animation: mic-pulse 1.2s ease-in-out infinite;
+            }
+            @keyframes mic-pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.4; }
+            }
+            .voice-hint {
+                font-size: 10px;
+                color: var(--text-3);
+                font-style: italic;
+            }
+            .voice-hint.error { color: var(--red); }
+            .voice-hint.ok    { color: var(--green); }
+
+            /* ── Voice Response (TTS) */
+            .speak-btn {
+                background: none;
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 2px 9px;
+                font-size: 13px;
+                cursor: pointer;
+                color: var(--text-3);
+                transition: border-color 0.15s, background 0.15s, color 0.15s;
+                line-height: 1.6;
+            }
+            .speak-btn:hover { border-color: var(--accent); background: rgba(74,158,255,0.08); color: var(--accent); }
+            .speak-btn.speaking { border-color: var(--green); background: rgba(61,220,132,0.08); color: var(--green); }
+
             /* Full-window drag overlay */
             #window-drop-overlay {
                 display: none;
@@ -1669,6 +1715,23 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-row" id="voice-toggle-row">
+                        <span class="toggle-label">
+                            🎙️ <span>Voice Dictate</span>
+                            <span id="voice-status-hint" class="voice-hint"></span>
+                        </span>
+                        <label class="toggle">
+                            <input type="checkbox" id="voice-toggle" />
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row" id="tts-toggle-row">
+                        <span class="toggle-label">🔊 <span>Voice Response</span></span>
+                        <label class="toggle">
+                            <input type="checkbox" id="tts-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="btn-ghost" id="forget-btn">
                         🗑️ Forget all memory
                     </button>
@@ -1787,6 +1850,20 @@
                                     <path
                                         d="M13.5 8.5l-5.5 5.5a4 4 0 01-5.657-5.657l6.364-6.364a2.5 2.5 0 013.535 3.535l-6.364 6.364a1 1 0 01-1.414-1.414l5.657-5.657"
                                     />
+                                </svg>
+                            </button>
+                            <button id="mic-btn" title="Voice dictate" style="display:none">
+                                <svg id="mic-icon" viewBox="0 0 16 16" width="16" height="16"
+                                     fill="none" stroke="currentColor" stroke-width="1.5"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="5.5" y="1.5" width="5" height="9" rx="2.5" />
+                                    <path d="M3 7.5a5 5 0 0010 0" />
+                                    <line x1="8" y1="12.5" x2="8" y2="15" />
+                                    <line x1="5.5" y1="15" x2="10.5" y2="15" />
+                                </svg>
+                                <svg id="mic-recording-icon" viewBox="0 0 16 16" width="16" height="16"
+                                     fill="currentColor" style="display:none">
+                                    <rect x="4" y="4" width="8" height="8" rx="1.5" />
                                 </svg>
                             </button>
                             <span class="input-hint"
@@ -1932,6 +2009,7 @@
             const state = {
                 thinking: false,
                 currentProgress: null,
+                activeProject: null,   // path sent with every chat request
             };
 
             // ── Streaming state ────────────────────────────────────────────────────
@@ -1984,6 +2062,207 @@
             const indexModalSave = document.getElementById("index-modal-save");
             const indexStatus = document.getElementById("index-status");
 
+            // ── Voice Dictate refs & state ────────────────────────────────────────
+            const voiceToggle = document.getElementById("voice-toggle");
+            const voiceStatusHint = document.getElementById("voice-status-hint");
+            const micBtn = document.getElementById("mic-btn");
+            const micIcon = document.getElementById("mic-icon");
+            const micRecordingIcon = document.getElementById("mic-recording-icon");
+            let _mediaRecorder = null;
+            let _audioChunks = [];
+            let _voiceAvailable = false;   // set by /api/voice-status check
+
+            voiceToggle.addEventListener("change", () => {
+                if (voiceToggle.checked) {
+                    if (!_voiceAvailable) {
+                        voiceStatusHint.textContent = "no backend";
+                        voiceStatusHint.className = "voice-hint error";
+                        voiceToggle.checked = false;
+                        return;
+                    }
+                    micBtn.style.display = "flex";
+                    voiceStatusHint.textContent = "";
+                } else {
+                    micBtn.style.display = "none";
+                    stopRecording(true);   // hard stop if toggled off mid-record
+                    voiceStatusHint.textContent = "";
+                }
+            });
+
+            micBtn.addEventListener("click", () => {
+                if (_mediaRecorder && _mediaRecorder.state === "recording") {
+                    stopRecording(false);
+                } else {
+                    startRecording();
+                }
+            });
+
+            async function startRecording() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: { channelCount: 1, sampleRate: 16000 }
+                    });
+                    _audioChunks = [];
+                    _mediaRecorder = new MediaRecorder(stream, { mimeType: getBestMime() });
+                    _mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0) _audioChunks.push(e.data);
+                    };
+                    _mediaRecorder.onstop = () => {
+                        stream.getTracks().forEach(t => t.stop());   // release mic
+                    };
+                    _mediaRecorder.start(250);   // collect chunks every 250ms
+                    micBtn.classList.add("recording");
+                    micIcon.style.display = "none";
+                    micRecordingIcon.style.display = "block";
+                    chatInput.placeholder = "Listening... click mic or press Enter to stop";
+                } catch (err) {
+                    console.error("Mic access denied:", err);
+                    voiceStatusHint.textContent = "mic denied";
+                    voiceStatusHint.className = "voice-hint error";
+                }
+            }
+
+            function getBestMime() {
+                // Prefer webm/opus (smaller, well-supported), fall back to wav-like
+                for (const mime of ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]) {
+                    if (MediaRecorder.isTypeSupported(mime)) return mime;
+                }
+                return "";   // browser default
+            }
+
+            async function stopRecording(discard) {
+                if (!_mediaRecorder || _mediaRecorder.state !== "recording") return;
+                return new Promise((resolve) => {
+                    const onStop = _mediaRecorder.onstop;
+                    _mediaRecorder.onstop = async () => {
+                        onStop?.();
+                        micBtn.classList.remove("recording");
+                        micIcon.style.display = "block";
+                        micRecordingIcon.style.display = "none";
+                        chatInput.placeholder = "Ask Rain anything...";
+                        if (!discard && _audioChunks.length > 0) {
+                            await transcribeAudio(new Blob(_audioChunks, { type: _mediaRecorder.mimeType }));
+                        }
+                        _mediaRecorder = null;
+                        _audioChunks = [];
+                        resolve();
+                    };
+                    _mediaRecorder.stop();
+                });
+            }
+
+            async function transcribeAudio(blob) {
+                chatInput.placeholder = "Transcribing...";
+                try {
+                    const form = new FormData();
+                    form.append("audio", blob, "recording.webm");
+                    const res = await fetch("/api/transcribe", { method: "POST", body: form });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({ detail: res.statusText }));
+                        voiceStatusHint.textContent = err.detail || "transcribe failed";
+                        voiceStatusHint.className = "voice-hint error";
+                        return;
+                    }
+                    const data = await res.json();
+                    if (data.text && data.text.trim()) {
+                        // Insert transcribed text at cursor position (or append)
+                        const input = chatInput;
+                        const start = input.selectionStart;
+                        const before = input.value.substring(0, start);
+                        const after = input.value.substring(input.selectionEnd);
+                        const sep = before && !before.endsWith(" ") && !before.endsWith("\n") ? " " : "";
+                        input.value = before + sep + data.text.trim() + after;
+                        input.focus();
+                        // Auto-resize textarea
+                        input.style.height = "auto";
+                        input.style.height = input.scrollHeight + "px";
+                        voiceStatusHint.textContent = "";
+                    }
+                } catch (err) {
+                    console.error("Transcription error:", err);
+                    voiceStatusHint.textContent = "transcribe error";
+                    voiceStatusHint.className = "voice-hint error";
+                } finally {
+                    chatInput.placeholder = "Ask Rain anything...";
+                }
+            }
+
+            async function checkVoiceAvailability() {
+                try {
+                    const res = await fetch("/api/voice-status");
+                    if (res.ok) {
+                        const data = await res.json();
+                        _voiceAvailable = data.available === true;
+                        if (!_voiceAvailable) {
+                            voiceStatusHint.textContent = "install whisper";
+                            voiceStatusHint.className = "voice-hint error";
+                        }
+                    }
+                } catch {
+                    _voiceAvailable = false;
+                }
+            }
+
+            // ── Voice Response (TTS) ─────────────────────────────────────────────
+            const ttsToggle = document.getElementById("tts-toggle");
+            let _ttsUtterance = null;
+            let _cachedVoices = [];
+
+            // Voices load async — cache them when ready
+            function _loadVoices() {
+                const v = window.speechSynthesis.getVoices();
+                if (v.length) _cachedVoices = v;
+            }
+            _loadVoices();
+            window.speechSynthesis.onvoiceschanged = _loadVoices;
+
+            function stripMarkdownForSpeech(text) {
+                return text
+                    .replace(/```[\w]*\n[\s\S]*?```/g, " [code block] ")
+                    .replace(/`[^`\n]+`/g, " [code] ")
+                    .replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1")
+                    .replace(/^#{1,6}\s+/gm, "")
+                    .replace(/^[\*\-]\s+/gm, "")
+                    .replace(/^\d+\.\s+/gm, "")
+                    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+                    .replace(/\n{3,}/g, "\n\n")
+                    .trim();
+            }
+
+            function speakText(rawText, onStart, onDone) {
+                if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+                    window.speechSynthesis.cancel();
+                }
+                _ttsUtterance = null;
+                const text = stripMarkdownForSpeech(rawText);
+                if (!text) return;
+                const utterance = new SpeechSynthesisUtterance(text);
+                _ttsUtterance = utterance;
+                const _femalePrefs = [
+                    "Zoe", "Samantha", "Serena", "Karen", "Moira", "Tessa",
+                    "Nicky", "Kathy", "Martha", "Catherine",
+                    "Google UK English Female"
+                ];
+                const preferred = _femalePrefs.reduce(
+                    (found, name) => found || _cachedVoices.find(v => v.name === name),
+                    null
+                );
+                if (preferred) utterance.voice = preferred;
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                utterance.onstart = () => onStart?.();
+                utterance.onend   = () => { _ttsUtterance = null; onDone?.(); };
+                utterance.onerror = () => { _ttsUtterance = null; onDone?.(); };
+                window.speechSynthesis.speak(utterance);
+            }
+
+            function cancelSpeech() {
+                if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+                    window.speechSynthesis.cancel();
+                }
+                _ttsUtterance = null;
+            }
+
             // ── Init ───────────────────────────────────────────────────────────────
             async function init() {
                 await checkHealth();
@@ -1991,6 +2270,7 @@
                 await loadSessions();
                 await loadFeedbackStats();
                 await loadProjects();
+                await checkVoiceAvailability();
             }
 
             async function loadFeedbackStats() {
@@ -2092,6 +2372,9 @@
                         projectList.innerHTML = `<div class="agent-item" style="color:var(--text-3);font-size:11px;padding:6px 16px">No projects indexed</div>`;
                         return;
                     }
+                    // Auto-pin when there's only one project
+                    if (projects.length === 1) state.activeProject = projects[0].project_path;
+
                     projectList.innerHTML = "";
                     for (const p of projects) {
                         const name =
@@ -2100,18 +2383,27 @@
                         const lastIdx = p.last_indexed
                             ? p.last_indexed.slice(0, 16).replace("T", " ")
                             : "—";
+                        const isActive = state.activeProject === p.project_path;
                         const div = document.createElement("div");
-                        div.className = "project-item";
+                        div.className = "project-item" + (isActive ? " project-active" : "");
                         div.innerHTML = `
                             <div class="project-info" title="${escHtml(p.project_path)}">
-                                <div class="project-name">📂 ${escHtml(name)}</div>
+                                <div class="project-name">📂 ${escHtml(name)}${isActive ? ' <span style="color:var(--green);font-size:11px">● active</span>' : ""}</div>
                                 <div class="project-stats">${p.file_count} files · ${p.chunk_count} chunks · ${lastIdx}</div>
                             </div>
                             <div class="project-actions">
+                                ${projects.length > 1 ? `<button class="project-action-btn" title="Set as active project" data-action="pin" data-path="${escHtml(p.project_path)}">📌</button>` : ""}
                                 <button class="project-action-btn" title="Re-index project" data-action="reindex" data-path="${escHtml(p.project_path)}">⟳</button>
                                 <button class="project-action-btn danger" title="Remove from index" data-action="remove" data-path="${escHtml(p.project_path)}">×</button>
                             </div>
                         `;
+                        const pinBtn = div.querySelector('[data-action="pin"]');
+                        if (pinBtn) {
+                            pinBtn.addEventListener("click", async (e) => {
+                                state.activeProject = e.currentTarget.dataset.path;
+                                await loadProjects();
+                            });
+                        }
                         div.querySelector(
                             '[data-action="reindex"]',
                         ).addEventListener("click", async (e) => {
@@ -2546,6 +2838,7 @@
                 autoResize();
 
                 // Reset streaming state for this new request
+                cancelSpeech();
                 _streamingBubble = null;
                 _streamingContent = "";
 
@@ -2567,6 +2860,7 @@
                             sandbox: sandboxToggle.checked,
                             web_search: webSearchToggle.checked,
                             verbose: verboseToggle.checked,
+                            ...(state.activeProject ? { project_path: state.activeProject } : {}),
                         }),
                     });
 
@@ -2653,6 +2947,7 @@
                             // No tokens were streamed (react_loop, error fallback) — render normally
                             appendRainMessage(event.content, event);
                         }
+                        if (ttsToggle.checked) speakText(event.content);
                         loadSessions(); // refresh sidebar
                         setStatus("ok", _lastModel || "ready");
                         break;
@@ -2796,7 +3091,8 @@
                 feedbackDiv.className = "msg-feedback";
                 feedbackDiv.innerHTML = `
                     <button class="feedback-btn good" title="Good response">👍</button>
-                    <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>`;
+                    <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>
+                    <button class="speak-btn" title="Speak this response">🔊</button>`;
 
                 const correctionDiv = document.createElement("div");
                 correctionDiv.className = "feedback-correction";
@@ -2858,6 +3154,21 @@
                         feedbackDiv.innerHTML = `<span class="feedback-done">📝 Correction saved — Rain will learn from this</span>`;
                         correctionDiv.style.display = "none";
                     });
+
+                const speakBtnFinalize = feedbackDiv.querySelector(".speak-btn");
+                speakBtnFinalize.addEventListener("click", () => {
+                    if (speakBtnFinalize.classList.contains("speaking")) {
+                        cancelSpeech();
+                        speakBtnFinalize.classList.remove("speaking");
+                        speakBtnFinalize.textContent = "🔊";
+                    } else {
+                        speakText(
+                            content,
+                            () => { speakBtnFinalize.classList.add("speaking"); speakBtnFinalize.textContent = "⏹"; },
+                            () => { speakBtnFinalize.classList.remove("speaking"); speakBtnFinalize.textContent = "🔊"; }
+                        );
+                    }
+                });
 
                 scrollToBottom();
             }
@@ -2956,6 +3267,7 @@
                 feedbackDiv.innerHTML = `
                     <button class="feedback-btn good" title="Good response">👍</button>
                     <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>
+                    <button class="speak-btn" title="Speak this response">🔊</button>
                 `;
 
                 const correctionDiv = document.createElement("div");
@@ -3023,6 +3335,21 @@
                         feedbackDiv.innerHTML = `<span class="feedback-done">📝 Correction saved — Rain will learn from this</span>`;
                         correctionDiv.style.display = "none";
                     });
+
+                const speakBtnAppend = feedbackDiv.querySelector(".speak-btn");
+                speakBtnAppend.addEventListener("click", () => {
+                    if (speakBtnAppend.classList.contains("speaking")) {
+                        cancelSpeech();
+                        speakBtnAppend.classList.remove("speaking");
+                        speakBtnAppend.textContent = "🔊";
+                    } else {
+                        speakText(
+                            content,
+                            () => { speakBtnAppend.classList.add("speaking"); speakBtnAppend.textContent = "⏹"; },
+                            () => { speakBtnAppend.classList.remove("speaking"); speakBtnAppend.textContent = "🔊"; }
+                        );
+                    }
+                });
 
                 messagesEl.appendChild(wrapper);
                 scrollToBottom();
@@ -3786,6 +4113,11 @@
             chatInput.addEventListener("keydown", (e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
+                    // If recording, stop recording first (transcribes, then user sends)
+                    if (_mediaRecorder && _mediaRecorder.state === "recording") {
+                        stopRecording(false);
+                        return;
+                    }
                     sendMessage();
                 }
             });

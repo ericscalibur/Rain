@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -68,6 +68,20 @@ except ImportError:
 # Phase 6: Skills runtime
 if _SKILLS_AVAILABLE:
     from skills import SkillLoader
+
+# Phase 8: Voice — whisper STT backends (try multiple, graceful degradation)
+_WHISPER_BACKEND = None   # set below: "faster-whisper" | "openai-whisper" | None
+_whisper_model = None     # lazy-loaded on first transcription
+
+try:
+    from faster_whisper import WhisperModel as _FasterWhisperModel
+    _WHISPER_BACKEND = "faster-whisper"
+except ImportError:
+    try:
+        import whisper as _openai_whisper
+        _WHISPER_BACKEND = "openai-whisper"
+    except ImportError:
+        pass
 
 # ── App ────────────────────────────────────────────────────────────────
 
@@ -1295,6 +1309,104 @@ async def cross_project_search(query: str, exclude_project: Optional[str] = None
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Phase 8: Voice Dictation (STT) ─────────────────────────────────────
+
+@app.get("/api/voice-status")
+async def voice_status():
+    """
+    Reports whether a whisper backend is available for transcription.
+    The web UI checks this on load; if unavailable, the Voice Dictate
+    toggle shows a hint and refuses to enable.
+    """
+    backend = _WHISPER_BACKEND
+    install_hint = (
+        ".venv/bin/pip install faster-whisper"
+        if not backend else None
+    )
+    return {
+        "available": backend is not None,
+        "backend": backend,
+        "install_hint": install_hint,
+    }
+
+
+def _get_whisper_model():
+    """
+    Lazy-load the whisper model on first transcription request.
+    Uses the smallest 'base' model for speed; fully local, no network.
+    """
+    global _whisper_model
+    if _whisper_model is not None:
+        return _whisper_model
+
+    if _WHISPER_BACKEND == "faster-whisper":
+        print("🎙️ Loading faster-whisper model (base)...", flush=True)
+        _whisper_model = _FasterWhisperModel(
+            "base",
+            device="cpu",
+            compute_type="int8",
+        )
+        print("🎙️ faster-whisper ready", flush=True)
+    elif _WHISPER_BACKEND == "openai-whisper":
+        print("🎙️ Loading openai-whisper model (base)...", flush=True)
+        _whisper_model = _openai_whisper.load_model("base")
+        print("🎙️ openai-whisper ready", flush=True)
+    return _whisper_model
+
+
+@app.post("/api/transcribe")
+async def transcribe_upload(audio: UploadFile = File(...)):
+    """
+    Accept an audio file (multipart/form-data, field name 'audio'),
+    transcribe it with the local whisper backend, and return the text.
+
+    Response: { "text": "transcribed words", "duration_seconds": 1.23 }
+    """
+    if _WHISPER_BACKEND is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No whisper backend installed. Run: .venv/bin/pip install faster-whisper",
+        )
+
+    import tempfile
+    t0 = time.monotonic()
+
+    # Save uploaded audio to a temp file (whisper needs a file path)
+    suffix = ".webm"
+    if audio.filename:
+        suffix = "." + audio.filename.rsplit(".", 1)[-1] if "." in audio.filename else ".webm"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = tmp.name
+        content = await audio.read()
+        tmp.write(content)
+
+    try:
+        model = _get_whisper_model()
+        if model is None:
+            raise HTTPException(status_code=503, detail="Whisper model failed to load")
+
+        text = ""
+        if _WHISPER_BACKEND == "faster-whisper":
+            segments, _info = model.transcribe(tmp_path, beam_size=3, language="en")
+            text = " ".join(seg.text.strip() for seg in segments)
+        elif _WHISPER_BACKEND == "openai-whisper":
+            result = model.transcribe(tmp_path, language="en", fp16=False)
+            text = result.get("text", "").strip()
+
+        duration = round(time.monotonic() - t0, 2)
+        print(f"🎙️ Transcribed {len(content)} bytes → {len(text)} chars in {duration}s", flush=True)
+        return {"text": text, "duration_seconds": duration}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 # ── Phase 7: OpenAI-compatible endpoint (IDE integration) ─────────────
 
 @app.post("/v1/chat/completions")
@@ -2037,12 +2149,21 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             # ── Project context (Phase 7) ─────────────────────────────────────
             project_context_block = ""
-            if req.project_path and _INDEXER_AVAILABLE:
+            effective_project_path = req.project_path
+            if not effective_project_path and _INDEXER_AVAILABLE:
                 try:
-                    emit({"type": "progress", "message": f"📂 Searching project index: {req.project_path.split('/')[-1]}..."})
+                    _idx_tmp = ProjectIndexer()
+                    _all_projects = _idx_tmp.list_indexed_projects()
+                    if len(_all_projects) == 1:
+                        effective_project_path = _all_projects[0]["project_path"]
+                except Exception:
+                    pass
+            if effective_project_path and _INDEXER_AVAILABLE:
+                try:
+                    emit({"type": "progress", "message": f"📂 Searching project index: {effective_project_path.split('/')[-1]}..."})
                     _idx = ProjectIndexer()
                     project_context_block = _idx.build_context_block(
-                        req.message, req.project_path, top_k=4
+                        req.message, effective_project_path, top_k=4
                     )
                     if project_context_block:
                         emit({"type": "progress", "message": "📂 Project context injected"})
@@ -2053,10 +2174,10 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             # ── Knowledge graph context (Phase 10) ────────────────────────────
             kg_context_block = ""
-            if req.project_path and _KG_AVAILABLE:
+            if effective_project_path and _KG_AVAILABLE:
                 try:
                     _kg = KnowledgeGraph()
-                    kg_context_block = _kg.build_context_block(req.message, req.project_path)
+                    kg_context_block = _kg.build_context_block(req.message, effective_project_path)
                     if kg_context_block:
                         emit({"type": "progress", "message": "🧠 Knowledge graph context injected"})
                 except Exception:
@@ -2092,8 +2213,8 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
 
             # Propagate active project path onto the orchestrator so
             # _build_memory_context can proactively query the knowledge graph.
-            if req.project_path:
-                _orchestrator.project_path = req.project_path
+            if effective_project_path:
+                _orchestrator.project_path = effective_project_path
 
             # Auto-detect react vs reflect — ReAct wins when the query signals
             # real-world discovery (filesystem, git, logs) AND tools are loaded.
