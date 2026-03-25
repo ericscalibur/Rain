@@ -335,11 +335,10 @@ def _fetch_github_data(query: str) -> str:
 
     q = query.lower()
 
-    # Only fire if the query mentions GitHub-related terms
-    if not any(kw in q for kw in _GITHUB_KEYWORDS):
-        return ""
-
+    # Fire if the query contains a GitHub URL OR mentions GitHub-related terms
     slug = _extract_github_repo(query)
+    if not slug and not any(kw in q for kw in _GITHUB_KEYWORDS):
+        return ""
     if not slug:
         return ""
 
@@ -368,6 +367,24 @@ def _fetch_github_data(query: str) -> str:
     except Exception as e:
         lines.append(f"Repo lookup failed: {e}")
         return ""  # if repo doesn't exist, bail out entirely
+
+    # ── README (always fetch — most informative content in any repo) ──
+    try:
+        import base64 as _b64
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{slug}/readme",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            readme_data = _json.loads(resp.read().decode("utf-8"))
+        readme_raw = _b64.b64decode(readme_data.get("content", "")).decode("utf-8", errors="replace")
+        # Truncate to first 3000 chars — enough to understand purpose and architecture
+        readme_truncated = readme_raw[:3000]
+        if len(readme_raw) > 3000:
+            readme_truncated += "\n[… README truncated …]"
+        lines.append(f"README:\n{readme_truncated}")
+    except Exception:
+        pass  # repo may have no README — not a fatal error
 
     # ── Recent open issues (top 5) ─────────────────────────────────
     want_issues = any(kw in q for kw in ('issue', 'issues', 'bug', 'bugs', 'problem'))
@@ -451,6 +468,59 @@ def _fetch_github_data(query: str) -> str:
             name = rel.get("name", "")
             date = (rel.get("published_at") or "")[:10]
             lines.append(f"Latest release: {tag}{f' — {name}' if name and name != tag else ''} ({date})")
+        except Exception:
+            pass
+
+    # ── Key file contents (audit/security/compare queries) ────────────
+    # Fetch actual source files when the user wants a real audit or comparison.
+    # Priority files: dependency manifests, entry points, install scripts.
+    _AUDIT_KEYWORDS = ('audit', 'security', 'malicious', 'safe', 'trust', 'review',
+                       'compare', 'comparison', 'vs', 'versus', 'what does', 'what is',
+                       'how does', 'inspect', 'analyze', 'analyse')
+    want_files = any(kw in q for kw in _AUDIT_KEYWORDS)
+    if want_files:
+        try:
+            branch = repo.get('default_branch', 'main')
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{slug}/git/trees/{branch}?recursive=1",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tree_data = _json.loads(resp.read().decode("utf-8"))
+            all_paths = [item['path'] for item in tree_data.get('tree', []) if item.get('type') == 'blob']
+
+            _PRIORITY_FILES = [
+                'package.json', 'requirements.txt', 'setup.py', 'setup.cfg',
+                'pyproject.toml', 'Pipfile', 'Cargo.toml', 'go.mod',
+                'install.sh', 'Makefile', '__init__.py', 'main.py', 'index.js',
+                'index.ts', 'app.py', 'cli.py',
+            ]
+            to_fetch = []
+            for pf in _PRIORITY_FILES:
+                matches = [p for p in all_paths if p == pf or p.endswith('/' + pf)]
+                to_fetch.extend(matches[:1])
+            to_fetch = to_fetch[:6]  # cap at 6 files total
+
+            fetched_files = []
+            for path in to_fetch:
+                try:
+                    import base64 as _b64
+                    req = urllib.request.Request(
+                        f"https://api.github.com/repos/{slug}/contents/{path}",
+                        headers=headers,
+                    )
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        file_data = _json.loads(resp.read().decode("utf-8"))
+                    content = _b64.b64decode(file_data.get('content', '')).decode('utf-8', errors='replace')
+                    content_truncated = content[:1500]
+                    if len(content) > 1500:
+                        content_truncated += '\n[… truncated …]'
+                    fetched_files.append(f"--- {path} ---\n{content_truncated}")
+                except Exception:
+                    pass
+
+            if fetched_files:
+                lines.append("Key source files:\n\n" + "\n\n".join(fetched_files))
         except Exception:
             pass
 
@@ -2100,6 +2170,16 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             if _is_self_ref and req.web_search:
                 emit({"type": "progress", "message": "🧠 Self-referential query — answering from RAIN.md (web search suppressed)"})
 
+            # ── GitHub URL auto-fetch (always, regardless of web search toggle) ──
+            # If the user explicitly pastes a GitHub URL, fetch the repo data
+            # unconditionally — don't rely on the model to self-police against
+            # fabricating analysis of content it hasn't seen.
+            _github_prefetch = ""
+            if _extract_github_repo(req.message):
+                _github_prefetch = _fetch_github_data(req.message)
+                if _github_prefetch:
+                    emit({"type": "progress", "message": "⚡ GitHub repo fetched"})
+
             # ── Web search (if enabled) ───────────────────────────────────────
             search_results_count = 0
             search_augmented_message = None
@@ -2136,12 +2216,24 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                         context_parts.append(f"[Web search results for: {req.message}]\n\n{snippets}")
 
                     combined_context = "\n\n".join(context_parts)
+                    _audit_rules = ""
+                    if _extract_github_repo(req.message):
+                        _audit_rules = (
+                            f"\nIMPORTANT — security audit rules:\n"
+                            f"1. Only flag credentials as 'exposed' if a .env or secrets file actually appears in the file tree above. "
+                            f"If no .env is in the tree, the project correctly keeps secrets local — say so.\n"
+                            f"2. README instructions like 'create a .env with SECRET_KEY=...' describe setup steps, NOT committed secrets. "
+                            f"Do not report documented configuration as a credential leak.\n"
+                            f"3. ANSI color codes, terminal formatting variables, and cosmetic constants are not sensitive information.\n"
+                            f"4. Only report what is actually present in the fetched files above — do not infer or assume.\n"
+                        )
                     search_augmented_message = (
                         f"{combined_context}\n\n"
                         f"---\n"
                         f"Using the above live data and search results as context, answer this question accurately. "
                         f"Cite sources where relevant. The LIVE DATA block contains real-time numbers — "
-                        f"use those figures directly rather than saying you don't know the current value.\n\n"
+                        f"use those figures directly rather than saying you don't know the current value."
+                        f"{_audit_rules}\n\n"
                         f"Question: {req.message}"
                     )
                 else:
@@ -2186,6 +2278,22 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
             # Memory system (working memory = last 20 messages) already handles
             # continuity — no additional history injection needed here.
             base_message = search_augmented_message if search_augmented_message else req.message
+
+            # Inject GitHub prefetch when web search was off (search_augmented_message
+            # already contains it when web search is on via _fetch_live_data)
+            if _github_prefetch and not search_augmented_message:
+                base_message = (
+                    f"{_github_prefetch}\n\n---\n"
+                    f"Using the above live GitHub data as context, answer this question accurately.\n\n"
+                    f"IMPORTANT — security audit rules:\n"
+                    f"1. Only flag credentials as 'exposed' if a .env or secrets file actually appears in the file tree above. "
+                    f"If no .env is in the tree, the project correctly keeps secrets local — say so.\n"
+                    f"2. README instructions like 'create a .env with SECRET_KEY=...' describe setup steps, NOT committed secrets. "
+                    f"Do not report documented configuration as a credential leak.\n"
+                    f"3. ANSI color codes, terminal formatting variables, and cosmetic constants are not sensitive information.\n"
+                    f"4. Only report what is actually present in the fetched files above — do not infer or assume.\n\n"
+                    f"Question: {req.message}"
+                )
 
             # Combine all context blocks: project index + knowledge graph
             combined_context = ""
@@ -2255,7 +2363,7 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
                 data_sources = []
                 if do_web_search and search_results_count:
                     data_sources.append("web_search")
-                if do_web_search and live_block:
+                if (do_web_search and live_block) or _github_prefetch:
                     data_sources.append("live_api")
                 if project_context_block:
                     data_sources.append("project_index")
