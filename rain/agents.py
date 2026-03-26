@@ -482,20 +482,19 @@ _IMPLICIT_POS_SIGNALS = [
 # ── Preferred models per agent (falls back to default if not installed) ─
 
 AGENT_PREFERRED_MODELS = {
-    # DEV: rain-tuned is qwen2.5-coder:7b with Rain's behavioral system prompt baked in.
-    # qwen3:8b is the strong general fallback for code tasks.
-    AgentType.DEV:         ['rain-tuned', 'qwen2.5-coder:7b', 'qwen3:8b', 'qwen3:4b', 'qwen3:1.7b', 'codellama:7b', 'deepseek-coder:6.7b', 'llama3.2'],
-    # LOGIC/DOMAIN/GENERAL: qwen3:8b is the installed workhorse (5.2 GB).
-    # qwen3:4b and qwen3:1.7b handle fast-tier and fallback.
-    AgentType.LOGIC:       ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
-    AgentType.DOMAIN:      ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
+    # DEV: qwen2.5-coder:7b is purpose-built for code. rain-tuned is the same base
+    # with Rain's behavioral prompt baked in. qwen3.5:9b is the strong general fallback.
+    AgentType.DEV:         ['qwen2.5-coder:7b', 'rain-tuned', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codellama:7b', 'deepseek-coder:6.7b', 'llama3.2'],
+    # LOGIC/DOMAIN/GENERAL: qwen3.5:9b leads — best reasoning on this hardware.
+    AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
+    AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
     # Reflection is a critic/rater — needs precise rule-following more than raw reasoning.
     # gemma3:12b leads: stronger rubric discipline, fits in 16 GB alongside primary.
     # gemma3:4b is the fast fallback.
     AgentType.REFLECTION:  ['gemma3:12b', 'gemma3:4b', 'llama3.2', 'qwen3:4b', 'qwen3:8b'],
-    # Synthesizer: qwen3:8b is the best available for final answer rewriting.
-    AgentType.SYNTHESIZER: ['qwen3:8b', 'gemma3:4b', 'qwen3:4b', 'qwen3:1.7b', 'llama3.2'],
-    AgentType.GENERAL:     ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
+    # Synthesizer: qwen3:8b is fast for final answer rewriting; qwen3.5:9b if needed.
+    AgentType.SYNTHESIZER: ['qwen3:8b', 'gemma3:4b', 'qwen3:4b', 'qwen3.5:9b', 'qwen3.5:8b', 'llama3.2'],
+    AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
     AgentType.SEARCH:      ['llama3.2', 'qwen3:4b'],
 }
 
@@ -506,7 +505,7 @@ AGENT_PREFERRED_MODELS = {
 # Fast tier: llama3.2 (2 GB) handles yes/no logic, quick definitions, and
 # simple deductions without breaking a sweat.  Only used when the query is
 # short AND contains none of the complexity markers below.
-_LOGIC_FAST_PREFERRED = ['llama3.2', 'qwen3:1.7b', 'gemma3:4b', 'qwen3:4b']
+_LOGIC_FAST_PREFERRED = ['llama3.2', 'gemma3:4b', 'qwen3:1.7b', 'qwen3:4b']
 
 _LOGIC_COMPLEX_MARKERS = [
     # Explanation / elaboration requests
