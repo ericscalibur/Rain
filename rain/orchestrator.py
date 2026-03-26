@@ -294,16 +294,16 @@ class MultiAgentOrchestrator:
             except Exception:
                 pass
 
-        # Phase 11: surface top knowledge gaps on startup
+        # Phase 11: surface recent knowledge gaps on startup
         if self.memory:
             try:
                 gaps = self.memory.get_top_gaps(limit=3)
                 if gaps:
-                    print(f"🔍 Top knowledge gaps ({len(gaps)}):", flush=True)
+                    print(f"🔍 Recent knowledge gaps ({len(gaps)}):", flush=True)
                     for g in gaps:
-                        freq = g.get("frequency", 1)
-                        desc = g.get("gap_description", "")[:80]
-                        print(f"   [{freq}x] {desc}", flush=True)
+                        desc = (g.get("gap_description") or g.get("query", ""))[:80]
+                        conf = g.get("confidence", 0)
+                        print(f"   [{conf:.0%}] {desc}", flush=True)
             except Exception:
                 pass
 
@@ -664,25 +664,17 @@ class MultiAgentOrchestrator:
         return len(q_words & t_words) / len(q_words)
 
     def _log_knowledge_gap(self, query: str, confidence: float, rating: str):
-        """Phase 11: log topics where Rain struggled for self-directed improvement."""
+        """Phase 11: log topics where Rain struggled for self-directed improvement.
+        Delegates to memory.log_knowledge_gap() which owns the schema.
+        """
         if not self.memory:
             return
         try:
-            import sqlite3 as _sq
-            with _sq.connect(self.memory.db_path) as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS knowledge_gaps (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        query TEXT NOT NULL,
-                        confidence REAL,
-                        rating TEXT,
-                        timestamp TEXT NOT NULL,
-                        resolved INTEGER DEFAULT 0
-                    )""")
-                conn.execute(
-                    "INSERT INTO knowledge_gaps (query, confidence, rating, timestamp) VALUES (?,?,?,?)",
-                    (query[:300], round(confidence, 3), rating, datetime.now().isoformat())
-                )
+            # Use empty gap_description here — the background _detect_gap thread
+            # will fill in the LLM-generated description via memory.log_knowledge_gap()
+            self.memory.log_knowledge_gap(
+                self.memory.session_id, query, "", confidence, rating=rating
+            )
         except Exception:
             pass
 
@@ -781,6 +773,33 @@ class MultiAgentOrchestrator:
         fact_ctx = self.memory.get_fact_context(query=query)
         if fact_ctx:
             context += fact_ctx
+
+        # ── Phase 11: Knowledge gap awareness ─────────────────────────
+        # If this query touches a topic Rain has struggled with before,
+        # surface that gap so the agent knows to be especially careful.
+        if query:
+            try:
+                recent_gaps = self.memory.get_top_gaps(limit=10)
+                if recent_gaps:
+                    import re as _re
+                    q_words = set(_re.findall(r'\w+', query.lower()))
+                    matching_gaps = []
+                    for g in recent_gaps:
+                        gap_text = (g.get("gap_description") or g.get("query", "")).lower()
+                        gap_words = set(_re.findall(r'\w+', gap_text))
+                        overlap = q_words & gap_words
+                        # Require at least 2 content words in common
+                        if len(overlap - {'the','a','an','is','are','what','how','why','this','that','it'}) >= 2:
+                            matching_gaps.append(g)
+                    if matching_gaps:
+                        context += "\n\n[METACOGNITIVE NOTE — This topic matches a recent knowledge gap:\n"
+                        for g in matching_gaps[:2]:
+                            desc = g.get("gap_description") or ""
+                            if desc:
+                                context += f"  ⚠️ Past uncertainty: {desc[:200]}\n"
+                        context += "Be especially careful to be accurate here. If genuinely uncertain, say so explicitly.]\n"
+            except Exception:
+                pass
 
         # ── Tier 6: Knowledge graph (Phase 10 — proactive) ────────────
         # If a project is active, extract identifiers from the query and look

@@ -144,6 +144,30 @@ class RainMemory:
                 conn.execute("ALTER TABLE feedback ADD COLUMN access_count INTEGER DEFAULT 0")
             except Exception:
                 pass  # column already exists
+            # ── Create knowledge_gaps table (Phase 11 metacognition) ──
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS knowledge_gaps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    query TEXT NOT NULL,
+                    gap_description TEXT,
+                    confidence REAL,
+                    rating TEXT,
+                    resolved INTEGER DEFAULT 0,
+                    timestamp TEXT NOT NULL
+                );
+            """)
+            # Migrate existing knowledge_gaps table (add missing columns if absent)
+            for _col, _defn in [
+                ("session_id",       "TEXT"),
+                ("gap_description",  "TEXT"),
+                ("rating",           "TEXT"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE knowledge_gaps ADD COLUMN {_col} {_defn}")
+                except Exception:
+                    pass
+
             # ── Create synthesis_log table (dual-response logging — Priority 2) ──
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS synthesis_log (
@@ -1072,51 +1096,45 @@ class RainMemory:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def log_knowledge_gap(self, session_id: str, query: str, gap: str, confidence: float):
+    def log_knowledge_gap(self, session_id: str, query: str, gap: str, confidence: float,
+                          rating: str = None):
         """Persist a knowledge gap Rain identified in its own response.
 
         Called when synthesis fired or confidence was low — Rain records what it
         was uncertain about so patterns can be surfaced later via get_top_gaps().
         Suppressed in test_mode to keep diagnostic sessions from polluting the table.
+        Table is created in _init_db — no CREATE TABLE here.
         """
         if self.test_mode:
             return
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    """CREATE TABLE IF NOT EXISTS knowledge_gaps (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        session_id TEXT,
-                        query TEXT,
-                        gap_description TEXT,
-                        confidence REAL,
-                        resolved INTEGER DEFAULT 0,
-                        timestamp TEXT
-                    )""",
-                )
-                conn.execute(
                     """INSERT INTO knowledge_gaps
-                           (session_id, query, gap_description, confidence, timestamp)
-                       VALUES (?, ?, ?, ?, ?)""",
+                           (session_id, query, gap_description, confidence, rating, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (session_id, query[:300], gap[:500], confidence,
-                     datetime.now().isoformat())
+                     rating, datetime.now().isoformat())
                 )
         except Exception:
             pass
 
     def get_top_gaps(self, limit: int = 5) -> List[Dict]:
-        """Return the most common unresolved knowledge gaps across all sessions."""
+        """Return recent unresolved knowledge gaps, most recent first.
+
+        Returns single occurrences too (unlike the old HAVING COUNT(*) >= 2 filter)
+        since gaps are rare enough that even one POOR-rated response is worth surfacing.
+        """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    """SELECT gap_description, COUNT(*) as frequency,
-                              AVG(confidence) as avg_confidence
+                    """SELECT query, gap_description, confidence, rating, timestamp
                        FROM knowledge_gaps
                        WHERE resolved = 0
-                       GROUP BY gap_description
-                       HAVING COUNT(*) >= 2
-                       ORDER BY frequency DESC, avg_confidence ASC
+                         AND gap_description IS NOT NULL
+                         AND gap_description != ''
+                       ORDER BY timestamp DESC
                        LIMIT ?""",
                     (limit,)
                 ).fetchall()
