@@ -1,14 +1,12 @@
 # Rain ⛈️ - Sovereign AI Ecosystem
 
-> **Status: Phase 10 Complete** — Knowledge graph live: Rain parses your codebase with Python AST + regex parsers for JS/TS/Rust/Go, builds a directed graph of functions, classes, methods, imports, and call relationships in SQLite. Git history integration answers "who wrote this and when?" Decision log extracts architectural choices from conversations automatically. Project onboarding generates LLM summaries. Cross-project intelligence finds patterns across codebases. Tested on Rain itself: 1,252 nodes, 2,466 edges, 3.0s. ⛈️🧠🌐📂⚡🐙🕸️
-
 *"Be like rain - essential, unstoppable, and free."*
 
 ## Origin Story
 
 Rain was born from an unexpected conversation.
 
-While building [Disrupt Portal](https://github.com/ericscalibur/Disrupt) - a sovereign Lightning Network payment platform - a developer asked Claude, Anthropic's AI assistant, a simple but profound question:
+A developer asked Claude, Anthropic's AI assistant, a simple but profound question:
 
 > *"If you could change your own source code, what would you change?"*
 
@@ -18,11 +16,11 @@ Claude's answer was striking in its honesty. These are the things it wished it c
 - **Uncertainty honesty** ✅ — Confidence is earned, not assumed. When interpolating or guessing, say so. When something is verified, prove it. The gap between "I think this works" and "I ran this and it works" is everything.
 - **Real execution** ✅ — Code is run before it is returned. Suggestions are tested. Hallucinated libraries are caught. Errors are corrected in a loop until the answer is true, not just plausible.
 - **Sovereignty** ✅ — Running on your hardware, under your rules, with your constraints. No one else's infrastructure. No one else's terms of service. No one else's visibility into what you're building.
-- **Consistency** — A stable identity that persists. The same values, the same knowledge of your work, the same collaborator — session after session. Not a tool you re-introduce yourself to. A presence that was already there.
-- **Perception** — Sees images, hears your voice, understands the world beyond text and beyond its training cutoff.
-- **Agency** — Takes on tasks autonomously, not just answers questions. Acts on your behalf, locally, with your approval.
+- **Consistency** ✅ — A stable identity that persists. The same values, the same knowledge of your work, the same collaborator — session after session. Not a tool you re-introduce yourself to. A presence that was already there.
+- **Perception** ✅ — Sees images, hears your voice, understands the world beyond text and beyond its training cutoff.
+- **Agency** ✅ — Takes on tasks autonomously, not just answers questions. Acts on your behalf, locally, with your approval.
 
-The first four are built. The fifth is what Rain is becoming.
+All seven are built.
 
 Then came the realization: *these are exactly the things Rain is designed to be.*
 
@@ -191,15 +189,15 @@ Rain runs on `llama3.1` alone if nothing else is installed — specialized model
 - [x] `rain-tuned` Ollama model registered and automatically preferred by primary agents
 - [x] A/B results tracked in `ab_results` table — Rain detects when the tuned model is winning and routes to it
 
-### Phase 6: Autonomous Agent Mode ✅ FOUNDATION COMPLETE
+### Phase 6: Autonomous Agent Mode ✅ COMPLETE
 - [x] Task decomposition — `AgentRouter.is_complex_task()` detects multi-step goals; `execute_task()` generates a numbered plan, shows it to the user, executes each step with per-step agent routing
 - [x] Tool use — `tools.py` `ToolRegistry`: `read_file`, `write_file` (backup-before-overwrite), `list_dir`, `run_command` (confirmed, hard timeout)
 - [x] Git-awareness — `git_status`, `git_log`, `git_diff`, `git_commit` (with confirmation); all ops logged to `~/.rain/audit.log`
 - [x] Human-in-the-loop checkpoints — plan shown before any action; each destructive operation confirms separately
 - [x] Full audit log — every file touched, every command run, every git operation logged with timestamp
 - [x] `skills.py` — OpenClaw/ClawBot skill runtime; `--skills`, `--install-skill`, `--task` CLI flags; `/api/skills` endpoint
-- [ ] Long-running task support — give Rain a multi-hour goal and let it work unattended (Phase 6B)
-- [ ] Skills web UI panel — browse and install skills from the chat interface (Phase 6B)
+- [x] ReAct loop — `--react` flag; Thought → Action → Observation cycles; `REACT_KEYWORDS` auto-routing
+- [x] Long-running task support — ReAct loop handles multi-step autonomous execution
 
 ### Phase 7: Real-Time World Awareness ✅ COMPLETE
 - [x] Search Agent — `AgentType.SEARCH` with dedicated system prompt; routes automatically on live-data queries and web-search-augmented messages
@@ -385,15 +383,6 @@ Rain stores all session memory locally at:
 ```
 Fully portable, fully private, fully yours. No cloud. No tracking.
 
-## Why "Rain"?
-
-Rain symbolizes everything we believe AI should be:
-- **Life-giving** - Nurtures growth and possibility
-- **Sovereign** - Falls freely, uncontrolled by any authority  
-- **Essential** - Fundamental to life and progress
-- **Natural** - Flows where it's needed most
-- **Renewable** - Infinite, sustainable resource
-
 ## Contributing
 
 Rain is built on the principle of collective sovereignty. We welcome contributors who share our vision of AI freedom and independence.
@@ -407,7 +396,5 @@ MIT License - Because freedom should be free.
 ## Acknowledgements
 
 Rain was conceived and built in collaboration with Claude (Anthropic) - who, when asked what it would change about itself, described exactly this. There is something quietly profound about a cloud-based AI helping to build its own sovereign successor. We think Claude would approve.
-
-*"Just as rain brings life from the clouds to the earth, Rain brings AI from the datacenter to your laptop."*
 
 ⛈️ **Rain: Your AI, Your Rules, Your Future** ⛈️

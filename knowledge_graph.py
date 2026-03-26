@@ -51,6 +51,14 @@ OLLAMA_MODEL = "llama3.1"
 # Max file size to attempt parsing (500KB — matches indexer.py)
 MAX_PARSE_SIZE = 500_000
 
+# Specific filenames to exclude — these are meta-documents written for Claude
+# (the AI assistant), not for Rain. Including them would inject instructions
+# meant for a different AI into Rain's project context and knowledge graph.
+IGNORE_FILES = frozenset({
+    "CLAUDE.md",           # Instructions for Claude AI assistant — not for Rain
+    "SESSION_HANDOFF.md",  # Claude session carry-forward notes — not for Rain
+})
+
 # Directories to skip (mirrors indexer.py)
 IGNORE_DIRS = frozenset({
     ".git", ".hg", ".svn",
@@ -1639,6 +1647,10 @@ class KnowledgeGraph:
             if rel_parts & IGNORE_DIRS:
                 continue
             if any(part.startswith(".") for part in rel_parts):
+                continue
+            # Skip filenames reserved for Claude — indexing these would inject
+            # AI-assistant instructions into Rain's own knowledge graph.
+            if path.name in IGNORE_FILES:
                 continue
             ext = path.suffix.lower()
             if ext not in CODE_EXTENSIONS:

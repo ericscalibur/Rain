@@ -396,12 +396,20 @@ class MultiAgentOrchestrator:
 
         preferred = AGENT_PREFERRED_MODELS.get(agent_type, [self.default_model])
         for model in preferred:
+            # 1. Exact match — 'qwen3:8b' only matches 'qwen3:8b', not 'qwen3:1.7b'
+            if model in self._installed_models:
+                return model
+            # 2. Base-name match — handles ':latest' suffix differences only
+            #    e.g. 'llama3.2' matches 'llama3.2:latest'
+            #    but 'qwen3:8b' already failed exact match above so base fallback
+            #    is only reached for models without an explicit tag in the pref list
             pref_base = model.split(':')[0]
-            for installed in self._installed_models:
-                # Exact base-name match: 'llama3.1' matches 'llama3.1:latest',
-                # but 'qwen3' does NOT match 'qwen3.5:9b'.
-                if installed.split(':')[0] == pref_base:
-                    return installed
+            pref_tag  = model.split(':')[1] if ':' in model else None
+            if pref_tag is None:
+                # No tag specified — match any installed version of this base
+                for installed in self._installed_models:
+                    if installed.split(':')[0] == pref_base:
+                        return installed
         return self.default_model
 
     def _build_agents(self) -> Dict[AgentType, Agent]:

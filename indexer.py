@@ -42,6 +42,15 @@ EMBED_URL     = "http://localhost:11434/api/embed"
 MIN_SIMILARITY = 0.35   # minimum cosine similarity to surface a result
 
 # Directories that are never useful to index
+# Specific filenames to exclude from indexing — these are meta-documents written
+# for Claude (the AI assistant), not for Rain. Indexing them would inject
+# instructions meant for a different AI into Rain's project context, confusing
+# its self-model and capability understanding.
+IGNORE_FILES = frozenset({
+    "CLAUDE.md",           # Instructions for Claude AI assistant — not for Rain
+    "SESSION_HANDOFF.md",  # Claude session carry-forward notes — not for Rain
+})
+
 IGNORE_DIRS = frozenset({
     ".git", ".hg", ".svn",
     "node_modules", ".pnp",
@@ -531,6 +540,11 @@ class ProjectIndexer:
 
             # Hard-skip known binary extensions
             if ext in IGNORE_EXTENSIONS:
+                continue
+
+            # Skip filenames reserved for Claude — indexing these would inject
+            # AI-assistant instructions into Rain's own project context.
+            if name in IGNORE_FILES:
                 continue
 
             # Accept known text extensions OR small files without a listed extension
