@@ -215,21 +215,26 @@ class RainMemory:
             transcript += f"{role}: {content}\n"
 
         prompt = (
-            "Extract key facts from this conversation. "
-            "Return a JSON array of objects. Each object must have exactly these fields:\n"
-            '  "type": one of: technology, project, preference, decision, goal, person\n'
-            '  "key": short snake_case label (e.g. "preferred_language", "project_name")\n'
-            '  "value": the extracted value as a short string (e.g. "Python", "Rain")\n\n'
+            "Extract key facts about the USER (not about Rain/AI) from this conversation.\n"
+            "Return a JSON array of objects with exactly these fields:\n"
+            '  "type": one of: technology, project, preference, goal, person\n'
+            '  "key": use ONLY these canonical keys when applicable:\n'
+            '    user_name, preferred_language, active_project, os_platform,\n'
+            '    tech_stack, goal, organization, expertise_area, project_type\n'
+            '    (use a descriptive snake_case key only if none of the above fit)\n'
+            '  "value": short string (e.g. "Python", "Rain trading bot")\n\n'
             "Rules:\n"
-            "- Only include clearly stated facts, not guesses or inferences.\n"
-            "- Maximum 10 facts. Skip trivial or obvious items.\n"
+            "- Only facts about the human user — skip facts about Rain, AI, or general knowledge.\n"
+            "- Only include clearly stated facts, not guesses.\n"
+            "- Skip facts where the value is a generic word like 'time', 'array', 'my_project'.\n"
+            "- Maximum 8 facts. Prefer quality over quantity.\n"
             "- Return ONLY the JSON array — no preamble, no explanation, no markdown.\n\n"
             f"Conversation:\n{transcript}\n\nFacts JSON:"
         )
 
         try:
             payload = json.dumps({
-                "model": "llama3.1",
+                "model": "llama3.2",
                 "prompt": prompt,
                 "stream": False,
             }).encode("utf-8")
@@ -260,17 +265,66 @@ class RainMemory:
         except Exception:
             return []
 
+    # Canonical key aliases — map noisy LLM-extracted keys to stable canonical keys
+    _KEY_ALIASES = {
+        "language": "preferred_language",
+        "programming_language": "preferred_language",
+        "coding_language": "preferred_language",
+        "primary_language": "preferred_language",
+        "project": "active_project",
+        "project_name": "active_project",
+        "current_project": "active_project",
+        "main_project": "active_project",
+        "name": "user_name",
+        "username": "user_name",
+        "platform": "os_platform",
+        "operating_system": "os_platform",
+        "expertise": "expertise_area",
+        "experience": "expertise_area",
+    }
+    # Values that are clearly garbage / too generic to store
+    _GARBAGE_VALUES = {
+        "my_project", "project", "code", "time", "array", "stdlib",
+        "unknown", "n/a", "none", "null", "undefined", "yes", "no",
+        "true", "false", "1", "0", "it", "this", "that",
+    }
+    # Keys whose values are Rain-the-system, not user facts
+    _AI_SYSTEM_KEYS = {"name", "rain", "rain_name", "ai_name", "ai_type", "ai_system_name"}
+
     def save_session_facts(self, facts: List[Dict]):
         """
         Persist extracted session facts and roll persistent ones into user_profile.
+        Normalizes keys via _KEY_ALIASES and filters garbage before writing.
         """
         if not facts:
             return
         now = datetime.now().isoformat()
         PERSISTENT_TYPES = {"preference", "project", "technology", "person", "goal"}
+        def _normalize(fact: Dict) -> Optional[Dict]:
+            """Normalize key aliases and filter garbage. Returns None to skip."""
+            raw_key   = fact.get("key", "").strip().lower()
+            raw_value = fact.get("value", "").strip()
+            if not raw_key or not raw_value:
+                return None
+            # Drop AI-system facts (Rain talking about itself)
+            if raw_key in self._AI_SYSTEM_KEYS:
+                return None
+            if raw_value.lower() in {"rain", "rain ai", "sovereign ai"}:
+                return None
+            # Drop garbage values
+            if raw_value.lower() in self._GARBAGE_VALUES or len(raw_value) <= 1:
+                return None
+            # Normalize key to canonical form
+            key = self._KEY_ALIASES.get(raw_key, raw_key)
+            return {**fact, "key": key, "value": raw_value}
+
+        normalized = [n for f in facts if (n := _normalize(f)) is not None]
+        if not normalized:
+            return
+
         try:
             with sqlite3.connect(self.db_path) as conn:
-                for fact in facts:
+                for fact in normalized:
                     conn.execute(
                         """INSERT INTO session_facts
                                (session_id, fact_type, fact_key, fact_value, timestamp)
@@ -285,7 +339,7 @@ class RainMemory:
                     )
 
                 # Upsert into user_profile for persistent fact types
-                for fact in facts:
+                for fact in normalized:
                     if fact.get("type") in PERSISTENT_TYPES:
                         key = fact.get("key", "").strip()
                         value = fact.get("value", "").strip()
