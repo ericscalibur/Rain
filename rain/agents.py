@@ -482,24 +482,21 @@ _IMPLICIT_POS_SIGNALS = [
 # ── Preferred models per agent (falls back to default if not installed) ─
 
 AGENT_PREFERRED_MODELS = {
-    # Code-focused agents: qwen2.5-coder:7b is the primary — purpose-built for code.
-    # qwen3.5 / qwen3:8b are strong fallbacks for agent + reasoning tasks.
-    # codestral removed — 12 GB dead weight on Apple Silicon, cold-loads past timeout.
-    AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
-    # General reasoning agents: qwen3.5 leads where installed, then qwen3:8b.
-    # Both are explicitly trained for agent tasks with 128K context.
-    AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
+    # DEV: rain-tuned is qwen2.5-coder:7b with Rain's behavioral system prompt baked in.
+    # qwen3:8b is the strong general fallback for code tasks.
+    AgentType.DEV:         ['rain-tuned', 'qwen2.5-coder:7b', 'qwen3:8b', 'qwen3:4b', 'qwen3:1.7b', 'codellama:7b', 'deepseek-coder:6.7b', 'llama3.2'],
+    # LOGIC/DOMAIN/GENERAL: qwen3:8b is the installed workhorse (5.2 GB).
+    # qwen3:4b and qwen3:1.7b handle fast-tier and fallback.
+    AgentType.LOGIC:       ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
+    AgentType.DOMAIN:      ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
     # Reflection is a critic/rater — needs precise rule-following more than raw reasoning.
-    # gemma3:12b leads: larger Google model, stronger rubric discipline, still fits in
-    # 16 GB unified memory alongside the primary model.  gemma3:4b is the fast fallback.
-    AgentType.REFLECTION:  ['gemma3:12b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
-    # Synthesizer writes the final user-facing answer — needs a capable model, but
-    # qwen3:8b (5.2 GB) is meaningfully faster than qwen3.5:9b (6.6 GB) for this task.
-    # gemma3:4b (3.3 GB) is a strong second fallback if qwen3:8b isn't installed.
-    AgentType.SYNTHESIZER: ['qwen3:8b', 'gemma3:4b', 'qwen3:4b', 'qwen3.5:9b', 'qwen3.5:8b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.GENERAL:     ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    AgentType.SEARCH:      ['llama3.2', 'llama3.1', 'mistral:7b'],
+    # gemma3:12b leads: stronger rubric discipline, fits in 16 GB alongside primary.
+    # gemma3:4b is the fast fallback.
+    AgentType.REFLECTION:  ['gemma3:12b', 'gemma3:4b', 'llama3.2', 'qwen3:4b', 'qwen3:8b'],
+    # Synthesizer: qwen3:8b is the best available for final answer rewriting.
+    AgentType.SYNTHESIZER: ['qwen3:8b', 'gemma3:4b', 'qwen3:4b', 'qwen3:1.7b', 'llama3.2'],
+    AgentType.GENERAL:     ['qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'qwen3:1.7b', 'llama3.2'],
+    AgentType.SEARCH:      ['llama3.2', 'qwen3:4b'],
 }
 
 # ── Two-tier LOGIC routing ────────────────────────────────────────────────────
@@ -509,7 +506,7 @@ AGENT_PREFERRED_MODELS = {
 # Fast tier: llama3.2 (2 GB) handles yes/no logic, quick definitions, and
 # simple deductions without breaking a sweat.  Only used when the query is
 # short AND contains none of the complexity markers below.
-_LOGIC_FAST_PREFERRED = ['llama3.2', 'gemma3:4b', 'llama3.1', 'qwen3:4b']
+_LOGIC_FAST_PREFERRED = ['llama3.2', 'qwen3:1.7b', 'gemma3:4b', 'qwen3:4b']
 
 _LOGIC_COMPLEX_MARKERS = [
     # Explanation / elaboration requests
