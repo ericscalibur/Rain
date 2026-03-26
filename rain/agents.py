@@ -484,18 +484,16 @@ _IMPLICIT_POS_SIGNALS = [
 AGENT_PREFERRED_MODELS = {
     # Code-focused agents: qwen2.5-coder:7b is the primary — purpose-built for code.
     # qwen3.5 / qwen3:8b are strong fallbacks for agent + reasoning tasks.
-    # codestral (22B/12GB) kept further down — cold-loads past the 300s timeout
-    # on machines where it isn't already warm in memory.
-    AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codestral', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
+    # codestral removed — 12 GB dead weight on Apple Silicon, cold-loads past timeout.
+    AgentType.DEV:         ['qwen2.5-coder:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'codellama:7b', 'starcoder2:3b', 'deepseek-coder:6.7b', 'llama3.1'],
     # General reasoning agents: qwen3.5 leads where installed, then qwen3:8b.
     # Both are explicitly trained for agent tasks with 128K context.
     AgentType.LOGIC:       ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
     AgentType.DOMAIN:      ['qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b', 'qwen3:4b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'mistral:7b'],
-    # Reflection is a critic/rater, NOT an answerer — needs precise rule-following
-    # more than deep reasoning.  gemma3:4b (3.3 GB) leads here: Google's RLHF makes
-    # it unusually disciplined at applying structured rubrics, which is exactly what
-    # the REFLECTION prompt demands.  llama3.2 is the fast fallback.
-    AgentType.REFLECTION:  ['gemma3:4b', 'llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
+    # Reflection is a critic/rater — needs precise rule-following more than raw reasoning.
+    # gemma3:12b leads: larger Google model, stronger rubric discipline, still fits in
+    # 16 GB unified memory alongside the primary model.  gemma3:4b is the fast fallback.
+    AgentType.REFLECTION:  ['gemma3:12b', 'gemma3:4b', 'llama3.2', 'llama3.1', 'qwen3:4b', 'mistral:7b', 'qwen3.5:9b', 'qwen3.5:8b', 'qwen3:8b'],
     # Synthesizer writes the final user-facing answer — needs a capable model, but
     # qwen3:8b (5.2 GB) is meaningfully faster than qwen3.5:9b (6.6 GB) for this task.
     # gemma3:4b (3.3 GB) is a strong second fallback if qwen3:8b isn't installed.
