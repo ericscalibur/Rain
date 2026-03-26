@@ -4,112 +4,158 @@
 
 ---
 
-_Last updated: 2026-03-11 — Claude Sonnet 4.6_
+_Last updated: 2026-03-25 — Claude Sonnet 4.6_
 
 ---
 
 ## What Was Done This Session
 
 ### Starting State
-Picked up from the previous session's fixes (memory, self-knowledge, calibration, streaming). Rain was functional but had several remaining issues:
-- Synthesis still firing on correct responses (confidence deflation)
-- No fast-path for DOMAIN agent — 9-word factual queries hitting qwen3.5:9b (180s+)
-- Response streaming was raw/unformatted — user preferred status updates + polished final output
-- gemma3:4b not wired into model preferences
-- Reflection agent crashing (HTTP 500) due to RAIN.md context overflow at 4096 ctx
-- Sandbox self-awareness missing — Rain didn't know whether sandbox was active
+Picked up from previous session (streaming, DOMAIN fast tier, gemma3:4b reflection, rubric overhaul). Rain was functional. This session focused on getting Rain closer to Claude-level quality: synthesis misfires, Phase 8 voice, Phase 11 metacognition, model correctness, and memory hygiene.
 
 ---
 
 ## Fixes Committed This Session
 
-### rain.py
+### Voice TTS + STT (Phase 8 — complete)
 
 | Fix | Detail |
 |-----|--------|
-| **Sandbox self-awareness** | `Agent.__init__` now sets `self.sandbox_enabled` / `self.sandbox` BEFORE calling `_get_default_system_prompt()` so sandbox state is available. `_get_default_system_prompt()` now injects a `sandbox_fact` line into the system prompt: "Code sandbox: ACTIVE — Rain will automatically run any Python code you generate..." |
-| **gemma3:4b as reflection model** | Added gemma3:4b to `AGENT_PREFERRED_MODELS`: position #1 for REFLECTION, #2 for SYNTHESIZER, #5 for LOGIC/DOMAIN/GENERAL. Added to `_LOGIC_FAST_PREFERRED`. Confirmed running in production. |
-| **Reflection rubric overhaul** | Added explicit RATING GUIDE to `AGENT_PROMPTS[AgentType.REFLECTION]`: EXCELLENT/GOOD/NEEDS_IMPROVEMENT/POOR with clear definitions. GOOD = correct + no hallucinations; style and length preferences do NOT drop a response from GOOD. NEEDS_IMPROVEMENT reserved for genuine problems. |
-| **UNVERIFIABLE CLAIMS CHECK fix** | Reflection prompt's unverifiable claims check now explicitly exempts standard domain knowledge and well-reasoned elaboration from the NEEDS_IMPROVEMENT trigger. |
-| **RAIN.md excluded from REFLECTION/SYNTHESIZER** | `_build_runtime_context()` now skips RAIN.md injection for REFLECTION and SYNTHESIZER agent types. Was causing HTTP 500 on gemma3:4b (RAIN.md ~3-4K tokens + system prompt + primary response > 4096 ctx). |
-| **REFLECTION ctx bump** | `num_ctx` for REFLECTION raised from 4096 → 8192. |
-| **Two-tier DOMAIN routing** | Added fast-path for DOMAIN agent — mirrors LOGIC's existing two-tier pattern. Short queries (≤20 words, no complexity markers) → `_fast_logic_model()` (llama3.2, 5–15s). Complex domain analysis → qwen3.5:9b (120–180s). Reduced "is bitcoin blockchain a merkle tree?" from 236s → 32s. |
-| **Critique summary fix** | `↳` log line after synthesis fires now skips bare rating words (`EXCELLENT`, `GOOD`, `NEEDS_IMPROVEMENT`, `POOR`) and `Rating:` prefixes to show actual critique text instead of just the rating word. |
-| **Reflection model name in log** | Log line now shows `🔍 Reflection Agent reviewing... (gemma3:4b)` with actual model name. |
+| **Web Speech API TTS** | Voice Response toggle below Voice Dictate. 🔊 button on every response bubble. Auto-speaks on `done` event when toggle is on. Cancel on new send. |
+| **Female voice preference** | `onvoiceschanged` cache prevents empty array on first call. Ordered preference list: Zoe → Samantha → Serena → Karen → Moira → Tessa → other female voices. Uses `reduce()` not `find()` to avoid Daniel (male) matching first. |
+| **faster-whisper installed** | `pip install faster-whisper` in system python3 (miniconda). Previously only in `.venv` — server uses system python3. Mic button now works end-to-end. `/api/voice-status` returns `available: true`. |
 
-### server.py
+### Active Project Context
 
 | Fix | Detail |
 |-----|--------|
-| **Streaming suppressed in UI** | Token events now buffer silently — no streaming bubble. Status updates (draft ready, reflecting, synthesizing) show pipeline progress. Final response renders in one shot with full markdown + badges. |
-| **Progress messages with timing** | `patched_query_agent` now emits: `✓ Draft ready (Xs) — reflecting...`, `🔍 Reflection Agent reviewing... (model)`, `🔍 Reflection: good ✓` or `🔍 Reflection: needs improvement — synthesizing...`, `⚡ Synthesizer rewriting...` |
-| **Monkey-patch timing** | Added `_stage_times` dict tracking primary start and synth start; elapsed times included in progress messages. |
+| **`state.activeProject` sent with every chat request** | `project_path` injected into every `/api/chat` POST body. Auto-pinned when only one project indexed. 📌 pin button for multiple projects. |
+| **Server-side auto-detect** | When `req.project_path` not sent, uses single indexed project automatically. `effective_project_path` replaces `req.project_path` throughout chat handler. |
 
-### static/index.html
+### GitHub Auto-Fetch + Audit Rules
 
 | Fix | Detail |
 |-----|--------|
-| **Token buffering** | `case "token"` now sets `_streamingContent += event.content` and breaks — no bubble created. `done` event renders complete final response via `appendRainMessage()`. |
+| **Unconditional GitHub prefetch** | When query contains a GitHub URL, `_fetch_github_data()` runs before model sees the query — regardless of web search toggle. Prevents hallucinated repo analysis. |
+| **README + source files fetched** | Always fetches README. For audit/compare queries, also fetches up to 6 key source files × 1500 chars each via file tree walk. |
+| **Audit prompt rules** | Distinguish committed credentials vs README setup instructions. Ignore ANSI codes. Only report what's in fetched files. Prevents `.env` false positives. |
 
-### RAIN.md
+### Synthesis Misfires
 
-- Updated Weakness #2 to ✅ Fixed (reflection rubric)
-- Updated REFLECTION row to note gemma3:4b
-- Updated "What Would Actually Make Rain Better" priority #1
+| Fix | Detail |
+|-----|--------|
+| **Synthesis veto at 0.76** | `if rating == 'NEEDS_IMPROVEMENT' and primary_confidence >= 0.76: rating = 'GOOD'` — skips synthesis when confidence is high enough. |
+| **Reflection rating tail-scan** | Parses final 5 lines of critique before rfind fallback — prevents preamble text from swallowing the rating word. |
+| **TOPIC DRIFT softened** | Reflection prompt: only flag drift that actively misleads, not helpful adjacent context. |
+
+### Model Roster Fixes
+
+| Fix | Detail |
+|-----|--------|
+| **Exact match before base-name fallback** | `_best_model_for()` now tries exact match first (`qwen3:8b` → `qwen3:8b`), base-name only for tagless entries (`llama3.2` → `llama3.2:latest`). Fixed Synthesizer using `qwen3:1.7b` instead of `qwen3:8b`. |
+| **qwen3.5:9b + qwen2.5-coder:7b re-pulled** | Both were deleted during Docker space reclaim. Re-pulled and restored as primary models. |
+| **codestral removed** | 12GB dead weight on M1. Removed from DEV fallback list. |
+| **gemma3:12b promoted to primary REFLECTION** | Stronger on structured rubric tasks than gemma3:4b. |
+| **Model preferences realigned** | `AGENT_PREFERRED_MODELS` updated to match installed models. |
+
+### Phase 11 Metacognition
+
+| Fix | Detail |
+|-----|--------|
+| **Tier 1 relevance gating** | Session summaries filtered by keyword overlap with current query (> 0.08 threshold). Most recent summary always kept as recency anchor. |
+| **Tier 5 relevance gating** | `get_fact_context(query=query)` — session facts filtered by relevance when query provided, cap 12 vs 20. |
+| **Correction decay** | Corrections >90 days pruned unless `access_count >= 3`. Schema migration adds `access_count` column. |
+| **Knowledge gap logging** | When `final_confidence < 0.55 AND rating == 'POOR'`, logs gap. Background thread asks reflection agent for LLM-described gap text. |
+| **Knowledge gap schema fix** | Orchestrator was creating `knowledge_gaps` without `gap_description` column — all LLM descriptions failed silently. Fixed: `_init_db` owns the schema, schema migration adds missing columns, orchestrator delegates to `memory.log_knowledge_gap()`. `get_top_gaps()` now returns results. |
+| **Knowledge gap context injection** | `_build_memory_context()` checks recent gaps against current query (2+ content word overlap). Injects metacognitive warning: "Past uncertainty: [desc]. Be especially careful here." |
+| **Gap display on startup** | Shows up to 3 recent gaps with confidence % at startup. |
+| **Session pruning** | `prune_session_memory()` fires in background thread after each response; compresses old messages when session > 40 messages. |
+
+### Tier 5 User Profile Cleanup
+
+| Fix | Detail |
+|-----|--------|
+| **Model name fixed** | `extract_session_facts()` was using `llama3.1` (not installed) → failing silently for months. Fixed to `llama3.2`. |
+| **Canonical key list** | Extraction prompt now provides canonical keys: `user_name`, `preferred_language`, `active_project`, `os_platform`, `tech_stack`, `goal`, etc. |
+| **Rain-as-subject filter** | Extraction now asks for USER facts only. `_normalize()` drops facts where key is in `_AI_SYSTEM_KEYS` or value is `Rain`/`Sovereign AI`. |
+| **Garbage value filter** | Drops values like `my_project`, `time`, `array`, `unknown`. |
+| **Key alias normalization** | `_KEY_ALIASES` maps noisy LLM keys to canonical: `language` → `preferred_language`, `project_name` → `active_project`, etc. |
+| **DB wipe + reseed** | Wiped 264 polluted user_profile rows and 420 session_facts rows (topic extractions masquerading as user facts). Seeded 4 known-correct facts: `preferred_language=Python`, `active_project=Rain`, `project_type=sovereign local AI ecosystem on Ollama`, `goal=build Rain to replace Claude entirely`. |
+
+### Reflection Agent Improvements
+
+| Fix | Detail |
+|-----|--------|
+| **Epistemic boundary** | LOGIC and DOMAIN agents: if URL in query and no web search, Rain states it cannot access URLs rather than fabricating content. |
+| **URL/REPO FABRICATION CHECK** | REFLECTION prompt auto-rates POOR if response contains fabricated repo analysis not based on fetched data. |
 
 ---
 
-## Performance Baseline (post-session)
+## Current State (post-session)
 
-| Query type | Before this session | After |
-|-----------|---------------------|-------|
-| Short factual domain query | 181s (qwen3.5:9b) | 15–20s (llama3.2 fast tier) |
-| Short factual logic query | 10–20s (already had fast tier) | unchanged |
-| Complex domain/logic | 120–180s | unchanged (qwen3.5:9b still correct for these) |
-| Total w/ no synthesis | 200–240s | 30–50s |
-| Total w/ synthesis | 300–370s | 60–90s |
+### Installed Models
+```
+qwen3.5:9b       → LOGIC, DOMAIN, GENERAL (primary)
+qwen2.5-coder:7b → DEV (primary)
+gemma3:12b       → REFLECTION (primary)
+gemma3:4b        → REFLECTION (fallback), SYNTHESIZER (fallback)
+qwen3:8b         → SYNTHESIZER (primary)
+qwen3:4b         → fallback
+qwen3:1.7b       → fast tier fallback
+llama3.2         → REFLECTION fast tier, SEARCH
+rain-tuned       → DEV (preferred when available)
+nomic-embed-text → embeddings
+```
+
+### User Profile DB
+Clean — 4 seeded facts, garbage wiped. Future sessions will accumulate cleanly.
+
+### Knowledge Gaps DB
+Working — schema fixed, gap injection active. 3 gaps from prior sessions visible at startup.
 
 ---
 
 ## What's Still Outstanding
 
-### Synthesis still fires occasionally
-- With the rubric fix and RATING GUIDE, synthesis over-firing has reduced significantly
-- Root cause of remaining misfires: unknown — need actual critique text to diagnose (the `↳` fix helps here; watch logs on next synthesis fire)
-- TOPIC DRIFT rule in the reflection prompt may still be too strict — if synthesis fires on a correct answer that mentions adjacent concepts, soften this rule
-
 ### LoRA Weights Not Fused
-- `rain-tuned` in Ollama = qwen2.5-coder:7b + behavioral system prompt only (no LoRA weights baked in)
-- Adapter weights exist at `~/.rain/adapters/mlx-lora/adapters.safetensors` (22MB)
-- Blocked by: mlx_lm 0.31.0 doesn't support qwen2 → GGUF export
+- `rain-tuned` = qwen2.5-coder:7b + behavioral system prompt only (no LoRA weights)
+- Adapter weights at `~/.rain/adapters/mlx-lora/adapters.safetensors` (22MB)
+- Blocked: mlx_lm doesn't support qwen2 → GGUF export
 - Monitor: `pip install --upgrade mlx-lm` then re-run `python3 finetune.py --full`
 
-### Calibration
-- Check periodically: `sqlite3 ~/.rain/memory.db "SELECT agent_type, rating, COUNT(*) FROM feedback GROUP BY agent_type, rating;"`
-- Don't let test/debug sessions contaminate calibration — clear if needed
+### Phase 11 Remaining
+- Gap-driven learning only injects warnings — doesn't proactively seek to fill gaps
+- No self-directed "I should learn more about X" behavior yet
+- Knowledge gap resolution (marking gaps as resolved when Rain answers correctly) not wired
 
-### Confidence scoring still keyword-based
-- `_score_confidence()` was rewritten last session to hedge-aware (base 0.80, -0.05 per hedge phrase)
-- Still not ideal — longer correct answers score lower than short ones; question type not factored in
-- Deprioritized since synthesis over-firing is now mostly addressed by the rubric fix
+### Synthesis Still Occasionally Misfires
+- Veto at 0.76 catches most cases; remaining fires are genuine POOR ratings
+- Watch `↳` log lines to identify which reflection check is triggering
+
+### Phase 12: Distributed Rain
+- Not started
 
 ---
 
 ## Priority Order for Next Session
 
-1. **Phase 8: Voice** — `whisper.cpp` for STT, `piper-tts` for TTS, wake word detection, `--voice` CLI flag. Fully local. Marked as ⭐ Next in ROADMAP.md.
-2. **Synthesis misfires** — if synthesis is still firing on correct responses, read the actual critique text (now visible via `↳` fix) and tune the TOPIC DRIFT rule or whichever check is triggering.
-3. **Phase 11: Metacognition** — deliberate forgetting, relevance-gated memory injection, self-directed knowledge gap resolution.
-4. **LoRA weight fusion** — check mlx_lm for qwen2 GGUF support; re-run `python3 finetune.py --full` when available.
+1. **Gap resolution** — when Rain gives a confident correct answer on a topic it previously had a gap for, mark the gap `resolved = 1`. Close the loop.
+2. **Phase 11 self-directed learning** — Rain identifies its weakest topics from gap log and proactively asks clarifying questions or suggests it needs examples.
+3. **LoRA weight fusion** — check mlx_lm for qwen2 GGUF support; re-run `python3 finetune.py --full` when available.
+4. **Phase 12: Distributed Rain** — multi-node Rain instances sharing memory.
 
 ---
 
 ## Key Facts for Next Claude Instance
 
 - **Streaming**: done — tokens buffer silently, final response renders in one shot
-- **gemma3:4b**: pulled and confirmed running as REFLECTION model (3.3GB, Google, strong on structured rubric tasks)
-- **DOMAIN fast tier**: done — same pattern as LOGIC fast tier, using `_is_simple_logic_query` + `_fast_logic_model`
-- **RAIN.md**: exists at project root, loaded at server startup via `_load_rain_md()` in server.py, injected into every agent via `_build_runtime_context()` — EXCEPT REFLECTION and SYNTHESIZER (context overflow protection)
-- **Reflection ctx**: 8192 (was 4096) — required for gemma3:4b + primary response to fit
-- **Worktree**: `focused-dubinsky` branch exists but main repo at `/Users/ericscalibur/Documents/Rain/` is canonical — all changes applied to main
-- **No commits this session** — all changes are uncommitted edits in the working tree; commit before starting next session
+- **TTS**: Web Speech API, female voice, 🔊 per bubble, auto-speak toggle
+- **STT**: faster-whisper installed in system python3. Mic button fully functional.
+- **Active project**: sent with every chat request. Auto-detected server-side.
+- **GitHub prefetch**: unconditional when URL in query. Prevents hallucinated analysis.
+- **Synthesis veto**: NEEDS_IMPROVEMENT + conf ≥ 0.76 → vetoed to GOOD
+- **Model matching**: exact match first, base-name fallback only for tagless preferences
+- **Tier 5 profile**: clean 4-fact baseline, extraction now uses llama3.2 + canonical keys
+- **Knowledge gaps**: schema fixed, injection working, startup display shows recent gaps
+- **RAIN.md**: injected into every agent EXCEPT REFLECTION and SYNTHESIZER (context overflow protection)
+- **All changes committed** to main branch
