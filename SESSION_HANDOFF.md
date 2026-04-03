@@ -4,158 +4,143 @@
 
 ---
 
-_Last updated: 2026-03-25 — Claude Sonnet 4.6_
+_Last updated: 2026-03-31 — Claude Sonnet 4.6_
 
 ---
 
 ## What Was Done This Session
 
-### Starting State
-Picked up from previous session (streaming, DOMAIN fast tier, gemma3:4b reflection, rubric overhaul). Rain was functional. This session focused on getting Rain closer to Claude-level quality: synthesis misfires, Phase 8 voice, Phase 11 metacognition, model correctness, and memory hygiene.
+Phase 11: Metacognition & Self-Directed Evolution — substantial progress. Built the remaining pieces on top of what was already partially done (tiered escalation, gap detection, relevance-gated memory).
 
 ---
 
-## Fixes Committed This Session
+## Changes Made This Session
 
-### Voice TTS + STT (Phase 8 — complete)
+### 1. Fixed `prune_session_memory` schema bug — `rain/memory.py`
+- The `INSERT INTO session_facts` call used `fact`/`confidence` columns that don't exist in the schema
+- Fixed to use correct columns: `fact_type='compressed_history'`, `fact_key='summary'`, `fact_value=<compressed>`
+- This was silently failing and suppressing all deliberate forgetting
 
-| Fix | Detail |
-|-----|--------|
-| **Web Speech API TTS** | Voice Response toggle below Voice Dictate. 🔊 button on every response bubble. Auto-speaks on `done` event when toggle is on. Cancel on new send. |
-| **Female voice preference** | `onvoiceschanged` cache prevents empty array on first call. Ordered preference list: Zoe → Samantha → Serena → Karen → Moira → Tessa → other female voices. Uses `reduce()` not `find()` to avoid Daniel (male) matching first. |
-| **faster-whisper installed** | `pip install faster-whisper` in system python3 (miniconda). Previously only in `.venv` — server uses system python3. Mic button now works end-to-end. `/api/voice-status` returns `available: true`. |
+### 2. Phase 11 methods — `rain/memory.py`
+Three new methods added after `get_top_gaps()`:
 
-### Active Project Context
+**`get_performance_stats()`**
+- Queries `feedback` table, returns per-agent accuracy/confidence/counts (all time + rolling 30d)
+- Includes synthesis stats from `synthesis_log` and open gap count from `knowledge_gaps`
+- Powers `/api/performance` and the CLI `--meta` flag
 
-| Fix | Detail |
-|-----|--------|
-| **`state.activeProject` sent with every chat request** | `project_path` injected into every `/api/chat` POST body. Auto-pinned when only one project indexed. 📌 pin button for multiple projects. |
-| **Server-side auto-detect** | When `req.project_path` not sent, uses single indexed project automatically. `effective_project_path` replaces `req.project_path` throughout chat handler. |
+**`harvest_positive_examples(min_confidence=0.65, limit=200)`**
+- Collects `rating='good'`, no correction, `confidence >= threshold` rows
+- Returns list ready for JSONL export as positive fine-tuning examples
+- Complements the existing corrections export in finetune.py
 
-### GitHub Auto-Fetch + Audit Rules
+**`generate_meta_report(model_query_fn)`**
+- Calls `get_performance_stats()` + `get_top_gaps()` to build a stats block
+- Sends to LLM (llama3.2) with a metacognition prompt requesting: Strengths / Weak areas / Improvement proposals / One-sentence summary
+- Falls back to raw stats block if model unavailable
 
-| Fix | Detail |
-|-----|--------|
-| **Unconditional GitHub prefetch** | When query contains a GitHub URL, `_fetch_github_data()` runs before model sees the query — regardless of web search toggle. Prevents hallucinated repo analysis. |
-| **README + source files fetched** | Always fetches README. For audit/compare queries, also fetches up to 6 key source files × 1500 chars each via file tree walk. |
-| **Audit prompt rules** | Distinguish committed credentials vs README setup instructions. Ignore ANSI codes. Only report what's in fetched files. Prevents `.env` false positives. |
+### 3. Phase 11 API endpoints — `server.py`
+- `GET /api/performance` — returns `get_performance_stats()` JSON
+- `POST /api/finetune/harvest?min_confidence=0.65` — runs `harvest_positive_examples()`, writes to `~/.rain/training/positive_examples.jsonl`
+- `GET /api/meta` — runs `generate_meta_report()` via llama3.2, returns `{"report": "...markdown..."}`
 
-### Synthesis Misfires
+### 4. Phase 11 UI — `static/index.html`
+- New **Performance** sidebar section (above sidebar footer, below Training)
+- Shows: total ratings, overall accuracy, per-agent accuracy (last 30d), synthesis stats, open gap count
+- **🧠 Self-Assessment** button — calls `/api/meta`, renders the report in an expandable box in the sidebar
 
-| Fix | Detail |
-|-----|--------|
-| **Synthesis veto at 0.76** | `if rating == 'NEEDS_IMPROVEMENT' and primary_confidence >= 0.76: rating = 'GOOD'` — skips synthesis when confidence is high enough. |
-| **Reflection rating tail-scan** | Parses final 5 lines of critique before rfind fallback — prevents preamble text from swallowing the rating word. |
-| **TOPIC DRIFT softened** | Reflection prompt: only flag drift that actively misleads, not helpful adjacent context. |
-
-### Model Roster Fixes
-
-| Fix | Detail |
-|-----|--------|
-| **Exact match before base-name fallback** | `_best_model_for()` now tries exact match first (`qwen3:8b` → `qwen3:8b`), base-name only for tagless entries (`llama3.2` → `llama3.2:latest`). Fixed Synthesizer using `qwen3:1.7b` instead of `qwen3:8b`. |
-| **qwen3.5:9b + qwen2.5-coder:7b re-pulled** | Both were deleted during Docker space reclaim. Re-pulled and restored as primary models. |
-| **codestral removed** | 12GB dead weight on M1. Removed from DEV fallback list. |
-| **gemma3:12b promoted to primary REFLECTION** | Stronger on structured rubric tasks than gemma3:4b. |
-| **Model preferences realigned** | `AGENT_PREFERRED_MODELS` updated to match installed models. |
-
-### Phase 11 Metacognition
-
-| Fix | Detail |
-|-----|--------|
-| **Tier 1 relevance gating** | Session summaries filtered by keyword overlap with current query (> 0.08 threshold). Most recent summary always kept as recency anchor. |
-| **Tier 5 relevance gating** | `get_fact_context(query=query)` — session facts filtered by relevance when query provided, cap 12 vs 20. |
-| **Correction decay** | Corrections >90 days pruned unless `access_count >= 3`. Schema migration adds `access_count` column. |
-| **Knowledge gap logging** | When `final_confidence < 0.55 AND rating == 'POOR'`, logs gap. Background thread asks reflection agent for LLM-described gap text. |
-| **Knowledge gap schema fix** | Orchestrator was creating `knowledge_gaps` without `gap_description` column — all LLM descriptions failed silently. Fixed: `_init_db` owns the schema, schema migration adds missing columns, orchestrator delegates to `memory.log_knowledge_gap()`. `get_top_gaps()` now returns results. |
-| **Knowledge gap context injection** | `_build_memory_context()` checks recent gaps against current query (2+ content word overlap). Injects metacognitive warning: "Past uncertainty: [desc]. Be especially careful here." |
-| **Gap display on startup** | Shows up to 3 recent gaps with confidence % at startup. |
-| **Session pruning** | `prune_session_memory()` fires in background thread after each response; compresses old messages when session > 40 messages. |
-
-### Tier 5 User Profile Cleanup
-
-| Fix | Detail |
-|-----|--------|
-| **Model name fixed** | `extract_session_facts()` was using `llama3.1` (not installed) → failing silently for months. Fixed to `llama3.2`. |
-| **Canonical key list** | Extraction prompt now provides canonical keys: `user_name`, `preferred_language`, `active_project`, `os_platform`, `tech_stack`, `goal`, etc. |
-| **Rain-as-subject filter** | Extraction now asks for USER facts only. `_normalize()` drops facts where key is in `_AI_SYSTEM_KEYS` or value is `Rain`/`Sovereign AI`. |
-| **Garbage value filter** | Drops values like `my_project`, `time`, `array`, `unknown`. |
-| **Key alias normalization** | `_KEY_ALIASES` maps noisy LLM keys to canonical: `language` → `preferred_language`, `project_name` → `active_project`, etc. |
-| **DB wipe + reseed** | Wiped 264 polluted user_profile rows and 420 session_facts rows (topic extractions masquerading as user facts). Seeded 4 known-correct facts: `preferred_language=Python`, `active_project=Rain`, `project_type=sovereign local AI ecosystem on Ollama`, `goal=build Rain to replace Claude entirely`. |
-
-### Reflection Agent Improvements
-
-| Fix | Detail |
-|-----|--------|
-| **Epistemic boundary** | LOGIC and DOMAIN agents: if URL in query and no web search, Rain states it cannot access URLs rather than fabricating content. |
-| **URL/REPO FABRICATION CHECK** | REFLECTION prompt auto-rates POOR if response contains fabricated repo analysis not based on fetched data. |
+### 5. `--meta` CLI flag — `rain.py`
+- `python3 rain.py --meta` — generates and prints the metacognition report, then exits
+- Uses llama3.2 directly (same model as server-side)
 
 ---
 
-## Current State (post-session)
+## Phase 11 Completion Status
 
-### Installed Models
-```
-qwen3.5:9b       → LOGIC, DOMAIN, GENERAL (primary)
-qwen2.5-coder:7b → DEV (primary)
-gemma3:12b       → REFLECTION (primary)
-gemma3:4b        → REFLECTION (fallback), SYNTHESIZER (fallback)
-qwen3:8b         → SYNTHESIZER (primary)
-qwen3:4b         → fallback
-qwen3:1.7b       → fast tier fallback
-llama3.2         → REFLECTION fast tier, SEARCH
-rain-tuned       → DEV (preferred when available)
-nomic-embed-text → embeddings
-```
+**Already built (previous sessions + this session):**
+- ✅ Tiered model escalation (`_fast_logic_model`, `_is_simple_logic_query` in orchestrator)
+- ✅ Knowledge gap detection + logging + injection into agent prompts
+- ✅ Background LLM gap description generation
+- ✅ Deliberate forgetting via `prune_session_memory()` (now fixed)
+- ✅ Relevance-gated Tier 1 (session summaries — keyword overlap > 0.08)
+- ✅ Relevance-gated Tier 3 (semantic search — cosine sim)
+- ✅ Relevance-gated Tier 4 (corrections — semantic retrieval)
+- ✅ Relevance-gated Tier 5 (session facts — keyword overlap > 0.05; profile always injected)
+- ✅ Metacognitive note injection (gap awareness in agent prompts)
+- ✅ Performance dashboard (`get_performance_stats` + `/api/performance` + UI panel)
+- ✅ Self-generated positive training data (`harvest_positive_examples` + `/api/finetune/harvest`)
+- ✅ Metacognition agent (`generate_meta_report` + `/api/meta` + `--meta` CLI flag)
+- ✅ Calibration tracking (`get_calibration_factors` in memory.py — per-agent accuracy factors)
 
-### User Profile DB
-Clean — 4 seeded facts, garbage wiped. Future sessions will accumulate cleanly.
+**What remains (nice-to-have):**
+- Improvement proposals that Rain can write to a file for human review (currently they're inline in the meta report)
+- Embedding-based gating for Tier 1 (currently keyword heuristic — more accurate but costs an embed call)
+- Context budget tracker (prune lowest-relevance injections when total context grows large)
+- Weekly scheduled meta report (cron-style, not yet wired)
 
-### Knowledge Gaps DB
-Working — schema fixed, gap injection active. 3 gaps from prior sessions visible at startup.
-
----
-
-## What's Still Outstanding
-
-### LoRA Weights Not Fused
-- `rain-tuned` = qwen2.5-coder:7b + behavioral system prompt only (no LoRA weights)
-- Adapter weights at `~/.rain/adapters/mlx-lora/adapters.safetensors` (22MB)
-- Blocked: mlx_lm doesn't support qwen2 → GGUF export
-- Monitor: `pip install --upgrade mlx-lm` then re-run `python3 finetune.py --full`
-
-### Phase 11 Remaining
-- Gap-driven learning only injects warnings — doesn't proactively seek to fill gaps
-- No self-directed "I should learn more about X" behavior yet
-- Knowledge gap resolution (marking gaps as resolved when Rain answers correctly) not wired
-
-### Synthesis Still Occasionally Misfires
-- Veto at 0.76 catches most cases; remaining fires are genuine POOR ratings
-- Watch `↳` log lines to identify which reflection check is triggering
-
-### Phase 12: Distributed Rain
-- Not started
+Phase 11 is substantially complete. If you consider the must-haves done, update ROADMAP.md to ✅.
 
 ---
 
-## Priority Order for Next Session
+## Discussions Worth Preserving
 
-1. **Gap resolution** — when Rain gives a confident correct answer on a topic it previously had a gap for, mark the gap `resolved = 1`. Close the loop.
-2. **Phase 11 self-directed learning** — Rain identifies its weakest topics from gap log and proactively asks clarifying questions or suggests it needs examples.
-3. **LoRA weight fusion** — check mlx_lm for qwen2 GGUF support; re-run `python3 finetune.py --full` when available.
-4. **Phase 12: Distributed Rain** — multi-node Rain instances sharing memory.
+### TurboQuant (Google Research)
+Evaluated this session. TurboQuant is KV-cache compression (PolarQuant 3-bit + QJL 1-bit error correction). Claims 6x KV-cache reduction, 8x throughput on H100 GPUs, no accuracy loss, no training required. **Not relevant to Rain today** — Rain runs 3–14B models single-query on M1 16GB; KV cache isn't the bottleneck. Bookmark for Phase 12 if Rain ever runs 70B+ models or multi-user concurrent sessions. Ollama may integrate it automatically in future.
+
+### Tier 3 semantic search gap identified
+Current `semantic_search()` has no minimum similarity threshold — top-3 results are always injected regardless of actual relevance score. As memory grows over months, completely irrelevant past exchanges will be injected if they happen to share any embedding direction with the query. Fix: add `min_similarity=0.25` floor to `semantic_search()` call in `_build_memory_context`. Small change, meaningful for long-running instances.
 
 ---
 
-## Key Facts for Next Claude Instance
+## Current State
 
-- **Streaming**: done — tokens buffer silently, final response renders in one shot
-- **TTS**: Web Speech API, female voice, 🔊 per bubble, auto-speak toggle
-- **STT**: faster-whisper installed in system python3. Mic button fully functional.
-- **Active project**: sent with every chat request. Auto-detected server-side.
-- **GitHub prefetch**: unconditional when URL in query. Prevents hallucinated analysis.
-- **Synthesis veto**: NEEDS_IMPROVEMENT + conf ≥ 0.76 → vetoed to GOOD
-- **Model matching**: exact match first, base-name fallback only for tagless preferences
-- **Tier 5 profile**: clean 4-fact baseline, extraction now uses llama3.2 + canonical keys
-- **Knowledge gaps**: schema fixed, injection working, startup display shows recent gaps
-- **RAIN.md**: injected into every agent EXCEPT REFLECTION and SYNTHESIZER (context overflow protection)
-- **All changes committed** to main branch
+- Rain server: functional — restart to pick up new endpoints
+- All three Python files compile clean (`python3 -m py_compile`)
+- Telegram bot: working (`python3 rain-telegram.py`)
+- `qwen2.5:14b`: should be fully downloaded now
+
+## Honest Assessment (dictated end of session)
+
+**What works:** Architecture is sound. 6-tier relevance-gated memory is real. Knowledge graph closes codebase hallucination. Phase 11 metacognition gives Rain genuine self-awareness of its weak areas. Telegram, voice, OpenAI-compatible API, web UI — Rain meets you everywhere.
+
+**What's broken:**
+- Confidence deflation (53–62% on correct answers) → synthesis fires constantly → 2–4 min response times. Root cause: local models trained for completions, not epistemic calibration. Fix: reflection rubric, not `_score_confidence()`.
+- Fine-tuning loop built but never run. `finetune.py --full` has never been executed. All quality improvement to date is prompt-level. No weight updates.
+- Tier 3 similarity floor missing — top-3 always injected regardless of score.
+- Correction deduplication doesn't exist — 10 corrections about the same mistake = 10 rows, growing noise.
+- Tool use reliability patch-worked, not fixed.
+
+**What Rain learned from Claude:** Epistemic calibration is trained not prompted. Consistency across sessions needs values in weights not facts in memory. Short and correct beats long and approximate — bias in local model training toward verbose responses.
+
+**What Rain learned from OpenClaw:** Skills as composable declarative units. Declarative triggers. Skill chaining. Community registry. ClawHub integration is half-wired — finish it.
+
+## What's Next (priority order)
+
+### Immediate (close existing loops)
+1. **Run the fine-tuning loop** — `python3 finetune.py --full`. First time Rain's weights reflect its own experience. Highest impact action available.
+2. **Fix reflection rubric** — grade on accuracy + epistemic honesty, not structure + completeness. One prompt edit. Fixes confidence deflation, cuts synthesis triggers, fastest responses get faster.
+3. **Tier 3 similarity floor** — `min_similarity=0.25` in orchestrator.py `_build_memory_context` semantic_search call. One line.
+4. **Correction deduplication** — background job distilling near-duplicate Tier 4 corrections into single authoritative rules.
+
+### Near-term
+5. **Phase 12: Sovereign Identity** — `--export`, Nostr keypair, cross-device sync, Lightning micropayments. Makes Rain portable and cryptographically yours.
+6. **Finish ClawHub skill ecosystem** — declarative triggers, skill chaining, one-click install from web UI.
+
+### Horizon
+7. **Proactive intelligence** — Rain surfaces insights without being asked, via Telegram. Pattern detection across sessions.
+8. **Sustained autonomy** — progress persistence for multi-hour tasks, milestone checkpoints, async Telegram notification when done.
+
+Phase 8 (Voice): ✅ Already done — STT via faster-whisper + `/api/transcribe`, TTS via Web Speech API, both toggles in web UI.
+
+## Known Issues (carry-forward)
+- Confidence deflation still present (53–62% on correct answers) — reflection prompt fix pending
+- Streaming works but synthesis can't stream (falls back to full response)
+- Vision slow on first run (model load time)
+- GitHub API rate limit at 60 req/hr unauthenticated
+- Tier 3 semantic search has no minimum similarity floor (top-3 always injected)
+
+## Eric's Setup
+- MacBook Pro M1, 16GB RAM, 712GB free disk
+- Ollama installed, Rain server on port 7734
+- Telegram bot wired to Rain, working
+- Monthly El Salvador tax filing automation planned (~2026-04-30)

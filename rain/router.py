@@ -144,9 +144,26 @@ class AgentRouter:
         'exchange rate', 'market price', 'how much is btc',
     ]
 
+    # Phrases that signal an advisory or meta question about Rain's own behavior.
+    # These should always route to LOGIC regardless of keyword scoring — they are
+    # asking HOW or WHAT, not asking Rain to DO something.
+    META_QUESTION_SIGNALS = [
+        'how should', 'what are the next steps', 'how to adjust', 'how to improve',
+        'what does rain', 'how does rain', 'what should rain', 'why does rain',
+        'how would rain', 'should rain', 'what is rain doing', 'how is rain',
+        'what happens when rain', 'what happens after', 'after running',
+        'after the fine', 'next steps after', 'steps after',
+    ]
+
     def route(self, query: str) -> AgentType:
         """Classify query and return the most appropriate AgentType."""
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
+
+        # Meta/advisory questions about Rain's behavior or internals always
+        # go to LOGIC — they are asking for analysis, not code execution.
+        # Check this BEFORE keyword scoring to prevent false DEV routes.
+        if any(sig in query_lower for sig in self.META_QUESTION_SIGNALS):
+            return AgentType.LOGIC
 
         # Phase 7: Search Agent — highest priority check.
         # If the query is already augmented with web search results (Rain's own prefix),

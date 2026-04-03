@@ -40,3 +40,17 @@ build/
 # Rain memory (stored in ~/.rain/ but just in case)
 memory.db
 .aider*
+
+# Backup files
+*.bak
+*.backup
+*.rain-backup
+
+# Release artifacts
+releases/
+
+# Claude Code workspace
+.claude/
+
+# Personal notes
+Erics-to-do.md

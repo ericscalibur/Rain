@@ -496,14 +496,20 @@ Example:
         """
         Parse [TOOL: name arg1 arg2 ...] invocations from model output.
         Returns list of {"name": str, "args": list[str]} dicts.
+        DOTALL enabled so multiline [TOOL: write_file ...] blocks parse correctly.
         """
         pattern = r'\[TOOL:\s*(\w+)(.*?)\]'
         calls = []
-        for m in re.finditer(pattern, text, re.IGNORECASE):
+        for m in re.finditer(pattern, text, re.IGNORECASE | re.DOTALL):
             name = m.group(1).strip()
             args_raw = m.group(2).strip()
-            # Split on whitespace, but respect quoted strings
-            args = self._split_args(args_raw)
+            # write_file: first whitespace-delimited token is path, rest is content.
+            # _split_args would shred multiline content into useless tokens.
+            if name.lower() == 'write_file':
+                parts = args_raw.split(None, 1)
+                args = parts if parts else []
+            else:
+                args = self._split_args(args_raw)
             calls.append({"name": name, "args": args, "raw": m.group(0)})
         return calls
 

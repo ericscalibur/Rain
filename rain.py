@@ -450,6 +450,8 @@ def main():
                         help="Augment query with live DuckDuckGo results before sending to agents (Phase 7)")
     parser.add_argument("--project", "-p", metavar="PATH",
                         help="Path to a project directory \u2014 injects relevant source code chunks into every query (Phase 7)")
+    parser.add_argument("--meta", action="store_true",
+                        help="Phase 11: run metacognition agent \u2014 generate a self-assessment report and exit")
 
     args = parser.parse_args()
 
@@ -546,6 +548,24 @@ def main():
         # --agents flag \u2014 just show roster and exit
         if args.agents:
             rain.print_agent_roster()
+            return
+
+        # --meta flag \u2014 Phase 11 metacognition: generate self-assessment report and exit
+        if args.meta:
+            if not memory:
+                print("\u274c Memory required for self-assessment. Remove --no-memory flag.")
+                return
+            print("\n\U0001f9e0 Running self-assessment...\n")
+            def _query_model(prompt: str) -> str:
+                import urllib.request as _ur, json as _j
+                payload = _j.dumps({"model": "llama3.2", "prompt": prompt, "stream": False}).encode()
+                req = _ur.Request("http://localhost:11434/api/generate", data=payload,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+                with _ur.urlopen(req, timeout=60) as r:
+                    return _j.loads(r.read())["response"].strip()
+            report = memory.generate_meta_report(_query_model)
+            print(report)
+            print()
             return
 
         # --memories flag - show session history + knowledge gaps
