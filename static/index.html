@@ -784,6 +784,38 @@
             }
 
             /* ── Progress / status messages ───────────────────────── */
+            .reflection-detail {
+                margin: 4px 0 4px 8px;
+                font-size: 0.82em;
+            }
+            .reflect-summary {
+                cursor: pointer;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 0.9em;
+                list-style: none;
+                display: inline-block;
+                user-select: none;
+            }
+            .reflect-summary::-webkit-details-marker { display: none; }
+            .reflect-excellent { color: #7ec8a0; }
+            .reflect-good      { color: #8ab4f8; }
+            .reflect-needs     { color: #f5c542; }
+            .reflect-poor      { color: #f28b82; }
+            .reflect-body {
+                margin-top: 6px;
+                padding: 8px 12px;
+                background: rgba(255,255,255,0.04);
+                border-left: 2px solid rgba(255,255,255,0.12);
+                border-radius: 0 4px 4px 0;
+                white-space: pre-wrap;
+                color: #9aa0a6;
+                font-family: monospace;
+                font-size: 0.88em;
+                line-height: 1.5;
+            }
+
             .msg-progress {
                 display: flex;
                 flex-direction: column;
@@ -1685,6 +1717,27 @@
                             ⚡ rain-tuned active
                         </div>
                     </div>
+
+                    <!-- ── Performance (Phase 11) ───────────────────── -->
+                    <div class="sidebar-section" style="margin-top: 12px">
+                        Performance
+                    </div>
+                    <div id="perf-section" style="padding: 4px 16px 8px">
+                        <div id="perf-stats"
+                            style="font-size:11px;color:var(--text-3);line-height:1.6;margin-bottom:8px">
+                            Loading…
+                        </div>
+                        <button id="meta-report-btn" class="btn-ghost"
+                            style="width:100%;justify-content:center;font-size:11px;padding:5px 10px">
+                            🧠 Self-Assessment
+                        </button>
+                        <div id="meta-report-out"
+                            style="display:none;margin-top:8px;font-size:11px;
+                                   color:var(--text-2);line-height:1.5;
+                                   background:var(--bg-2);border-radius:6px;padding:8px;
+                                   max-height:260px;overflow-y:auto;white-space:pre-wrap">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="sidebar-footer">
@@ -2270,8 +2323,65 @@
                 await loadSessions();
                 await loadFeedbackStats();
                 await loadProjects();
+                await loadPerformanceStats();
                 await checkVoiceAvailability();
             }
+
+            // ── Phase 11: Performance dashboard ───────────────────────────────────
+            async function loadPerformanceStats() {
+                const el = document.getElementById("perf-stats");
+                if (!el) return;
+                try {
+                    const res = await fetch("/api/performance");
+                    if (!res.ok) { el.textContent = "—"; return; }
+                    const data = await res.json();
+                    const ov = data.overall || {};
+                    const agents = data.by_agent_30d?.length ? data.by_agent_30d : (data.by_agent || []);
+                    const sy = data.synthesis || {};
+                    let html = "";
+                    if (ov.total_feedback) {
+                        const acc = ov.accuracy != null ? (ov.accuracy * 100).toFixed(0) + "%" : "—";
+                        html += `<b>${ov.total_feedback}</b> rated · <b>${acc}</b> accuracy`;
+                        if (ov.avg_confidence) html += ` · avg conf <b>${(ov.avg_confidence * 100).toFixed(0)}%</b>`;
+                        html += "<br>";
+                    }
+                    for (const a of agents.slice(0, 4)) {
+                        const acc = a.accuracy != null ? (a.accuracy * 100).toFixed(0) + "%" : "—";
+                        html += `<span style="color:var(--text-3)">${a.agent}</span> ${acc} (${a.total})<br>`;
+                    }
+                    if (sy.rated) {
+                        html += `<span style="color:var(--text-3)">Synthesis</span> ${sy.rated} runs · ${sy.improved} improved<br>`;
+                    }
+                    if (data.open_gaps) {
+                        html += `<span style="color:#f59e0b">⚠ ${data.open_gaps} open gap${data.open_gaps !== 1 ? "s" : ""}</span>`;
+                    }
+                    el.innerHTML = html || "No feedback data yet";
+                } catch {
+                    el.textContent = "—";
+                }
+            }
+
+            document.getElementById("meta-report-btn")?.addEventListener("click", async () => {
+                const btn = document.getElementById("meta-report-btn");
+                const out = document.getElementById("meta-report-out");
+                btn.disabled = true;
+                btn.textContent = "⏳ Thinking…";
+                out.style.display = "none";
+                try {
+                    const res = await fetch("/api/meta");
+                    if (!res.ok) throw new Error(await res.text());
+                    const data = await res.json();
+                    out.textContent = data.report || "No report generated.";
+                    out.style.display = "block";
+                    btn.textContent = "🔄 Refresh";
+                } catch (e) {
+                    out.textContent = "Error: " + e.message;
+                    out.style.display = "block";
+                    btn.textContent = "🧠 Self-Assessment";
+                } finally {
+                    btn.disabled = false;
+                }
+            });
 
             async function loadFeedbackStats() {
                 const badge = document.getElementById("corrections-badge");
@@ -2920,10 +3030,18 @@
                         );
                         break;
                     case "token":
-                        // Buffer silently — raw tokens aren't shown until the full
-                        // response is finalized. The progress lines show pipeline
-                        // status instead. Final content arrives in the "done" event.
                         _streamingContent += event.content;
+                        if (verboseToggle.checked) {
+                            // Verbose mode: show tokens live as they arrive
+                            if (!_streamingBubble) {
+                                _streamingBubble = createStreamingBubble();
+                            }
+                            updateStreamingBubble(_streamingBubble, _streamingContent);
+                        }
+                        break;
+                    case "reflection_detail":
+                        // Verbose mode: show reflection critique inline before final answer
+                        appendReflectionDetail(event.content, event.rating);
                         break;
                     case "clear_response":
                         // Synthesis is rewriting — wipe primary tokens from the bubble
@@ -3010,6 +3128,32 @@
                 // Show raw text while streaming — avoids expensive markdown re-parse
                 // on every token. On `done`, finalizeRainMessage renders full markdown.
                 body.textContent = text;
+                scrollToBottom();
+            }
+
+            function appendReflectionDetail(critique, rating) {
+                // Verbose mode: show reflection critique as a collapsible block
+                // inserted inline in the message flow before the final answer.
+                const ratingClass = {
+                    "EXCELLENT": "reflect-excellent",
+                    "GOOD": "reflect-good",
+                    "NEEDS_IMPROVEMENT": "reflect-needs",
+                    "POOR": "reflect-poor",
+                }[rating] || "reflect-good";
+                const ratingEmoji = {
+                    "EXCELLENT": "✨", "GOOD": "✓",
+                    "NEEDS_IMPROVEMENT": "⚠️", "POOR": "❌",
+                }[rating] || "✓";
+                const wrapper = document.createElement("div");
+                wrapper.className = "reflection-detail";
+                wrapper.innerHTML = `
+                    <details>
+                        <summary class="reflect-summary ${ratingClass}">
+                            🔍 Reflection critique — ${ratingEmoji} ${rating}
+                        </summary>
+                        <div class="reflect-body">${escHtml(critique)}</div>
+                    </details>`;
+                messagesEl.appendChild(wrapper);
                 scrollToBottom();
             }
 

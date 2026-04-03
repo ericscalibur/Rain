@@ -60,40 +60,69 @@ We believe AI should be:
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────┐
-│              Rain Orchestrator          │
-├─────────────────────────────────────────┤
-│  ┌─────────┐ ┌─────────┐ ┌─────────────┐ │
-│  │Dev Agent│ │Logic    │ │Domain       │ │
-│  │(7B SLM) │ │Agent    │ │Expert       │ │
-│  │         │ │(7B SLM) │ │(7B SLM)     │ │
-│  └─────────┘ └─────────┘ └─────────────┘ │
-├─────────────────────────────────────────┤
-│         Recursive Reflection Layer      │
-├─────────────────────────────────────────┤
-│              Ollama Runtime             │
-└─────────────────────────────────────────┘
+Query
+  │
+  ▼
+AgentRouter (pure Python keyword scoring — zero model calls)
+  │
+  ├─► DEV Agent      qwen2.5-coder:7b  (codestral:22b fallback)
+  ├─► LOGIC Agent    qwen2.5:14b       (tiered: llama3.2 for simple queries)
+  ├─► DOMAIN Agent   qwen2.5:14b       (tiered: llama3.2 for simple queries)
+  ├─► SEARCH Agent   llama3.2          (web search + live data synthesis)
+  └─► GENERAL Agent  qwen2.5:14b
+          │
+          ▼
+  Reflection Agent   llama3.2          (always runs — quality gate)
+          │
+     GOOD / EXCELLENT ──────────────► Response
+          │
+     NEEDS_IMPROVEMENT / POOR
+          │
+          ▼
+  Synthesizer        qwen3:8b          (rewrites poor primary responses)
+          │
+          ▼
+  Response + confidence badge + freshness badges + duration
+```
+
+**Memory pipeline (6 tiers, injected into every agent prompt):**
+```
+Tier 1  Session summaries      relevance-gated (keyword overlap > 0.08)
+Tier 2  Working memory         current session — always injected
+Tier 2.5 Session anchor        pinned opening messages (fires at 18+ messages)
+Tier 3  Semantic search        cosine similarity via nomic-embed-text (top-3)
+Tier 4  Corrections            semantic retrieval — past mistakes as negative examples
+Tier 5  User profile + facts   profile always injected; session facts relevance-gated
+Tier 6  Knowledge graph        structural code context — functions, calls, git blame
 ```
 
 ## Core Components
 
-### 1. Specialized Agents (7B Models)
-- **Dev Agent**: Code generation, debugging, refactoring
-- **Logic Agent**: Reasoning, planning, problem decomposition  
-- **Domain Expert**: Specialized knowledge (Coding, Encryption,Bitcoin, Lightning, etc.)
-- **Reflection Agent**: Quality control and iterative improvement
+### Specialized Agents
+| Agent | Primary Model | Role |
+|-------|--------------|------|
+| DEV | `qwen2.5-coder:7b` | Code generation, debugging, refactoring |
+| LOGIC | `qwen2.5:14b` | Reasoning, analysis, abstract questions |
+| DOMAIN | `qwen2.5:14b` | Domain expertise, technical knowledge |
+| GENERAL | `qwen2.5:14b` | Fallback |
+| SEARCH | `llama3.2` | Web search + live data synthesis |
+| REFLECTION | `llama3.2` | Quality assessment — always runs |
+| SYNTHESIZER | `qwen3:8b` | Rewrites poor-quality primary responses |
+| Vision | `gemma3:12b` | Image processing and description |
+| Embeddings | `nomic-embed-text` | Semantic memory + project indexing |
 
-### 2. Orchestrator
-- Routes queries to appropriate agents
-- Manages recursive reflection cycles
-- Synthesizes multi-agent responses
-- Handles consensus building
+### Tiered Model Escalation (Phase 11)
+Simple queries (short, factual, no complex reasoning markers) are routed to `llama3.2` (2GB, fast). Hard questions escalate to `qwen2.5:14b` (9GB, thorough). Zero extra model calls — pure Python heuristic on query length and structure.
 
-### 3. Recursive Reflection System
-- Models review and critique their own outputs
-- Iterative refinement until consensus or max iterations
-- Self-improvement through reflection loops
-- Quality gates and validation
+### Orchestrator
+- Keyword-scored routing — instant, no model call
+- Relevance-gated memory injection across 6 tiers
+- Recursive reflection — always runs, synthesis fires only on poor ratings
+- Knowledge gap detection and logging
+- Deliberate forgetting — compresses sessions > 40 messages
+
+### Knowledge Graph (Phase 10)
+Python AST + JS/TS/Rust/Go regex parsers build a directed graph in SQLite: nodes are functions, classes, methods, imports; edges are calls, inheritance, imports. Git history integration traces any function to the commit that introduced it. Injected into every agent prompt when a project is active.
 
 ## Technical Requirements
 
@@ -107,23 +136,25 @@ We believe AI should be:
 
 | Model | Role | Size | Required |
 |---|---|---|---|
-| `llama3.1:latest` | Base model / fallback for all agents | 4.9 GB | ✅ Yes |
-| `nomic-embed-text:latest` | Semantic memory embeddings (Phase 5A) | 274 MB | ✅ Yes |
-| `codellama:7b` | Dev Agent — code generation & debugging | 3.8 GB | Recommended |
-| `mistral:7b` | Logic, Domain, Reflection, Synthesizer agents | 4.1 GB | Recommended |
+| `llama3.2:latest` | Reflection, Search, fast LOGIC tier | 2.0 GB | ✅ Yes |
+| `nomic-embed-text` | Semantic memory + project indexing | 274 MB | ✅ Yes |
+| `qwen2.5-coder:7b` | Dev Agent — code generation & debugging | 4.7 GB | Recommended |
+| `qwen3:8b` | Synthesizer | 5.2 GB | Recommended |
+| `qwen2.5:14b` | LOGIC / DOMAIN / GENERAL (primary) | 9.0 GB | Recommended |
+| `gemma3:12b` | Vision — image processing | 8.1 GB | Optional |
+| `codestral:latest` | Dev Agent fallback (22B, slower) | 12 GB | Optional |
 
-**Minimum install** (base only): ~5.2 GB
-**Full recommended stack**: ~13.1 GB
-**Disk headroom for memory DB + sessions**: negligible (SQLite, typically <100 MB)
+**Minimum install** (llama3.2 + nomic-embed-text): ~2.3 GB
+**Full recommended stack** (all except codestral): ~29 GB
+**M1 16GB sweet spot**: llama3.2 + qwen2.5-coder:7b + qwen3:8b + qwen2.5:14b (~21 GB disk, models swap in/out of 16GB RAM)
 
-Rain runs on `llama3.1` alone if nothing else is installed — specialized models are automatic upgrades, not hard requirements.
+Rain auto-detects installed models on startup and degrades gracefully — nothing hard-requires any specific model.
 
 ### Software Stack
 - **Runtime**: Ollama (local model management)
-- **Models**: `llama3.1`, `codellama`, `mistral`, `nomic-embed-text`
-- **Language**: Python 3.10+ orchestration layer
-- **Interface**: CLI, FastAPI backend, and local web UI at `localhost:7734`
-- **Memory**: SQLite at `~/.rain/memory.db` — sessions, messages, and embedding vectors
+- **Language**: Python 3.10+ — zero mandatory pip deps beyond `fastapi` and `uvicorn` for the server
+- **Interface**: CLI, FastAPI backend, local web UI at `localhost:7734`, Telegram bot, OpenAI-compatible API
+- **Memory**: SQLite at `~/.rain/memory.db` — sessions, messages, vectors, corrections, facts, knowledge graph
 
 ## Development Roadmap
 
@@ -213,26 +244,27 @@ Rain runs on `llama3.1` alone if nothing else is installed — specialized model
 - [x] Background file watcher — `_file_watcher_loop()` thread runs every 60s, checks indexed projects for changed files via mtime comparison, auto-re-indexes modified and new files; `get_changed_files()` on `ProjectIndexer`; `/api/indexed-projects/{path}/changed` endpoint
 - [ ] VSCode extension published to marketplace (deferred — scaffold is installable as `.vsix`)
 
-### Phase 8: Voice & Ambient Interface ⭐ NEXT
-- [ ] Speech-to-text via `whisper.cpp` — fully local, no API key, real-time on consumer CPU
-- [ ] Text-to-speech via `piper-tts` — local, natural-sounding voice output
-- [ ] Wake word detection via `openwakeword` — "Hey Rain" without a button press, nothing uploaded
-- [ ] Microphone button in web UI — hold to record, release to send; Rain responds in text and voice
-- [ ] `python3 rain.py --voice` CLI mode
-- [ ] Ambient mode — Rain runs in the background, listens for wake word, no browser required
+### Phase 8: Voice & Ambient Interface ✅ COMPLETE
+- [x] Speech-to-text — `faster-whisper` (primary) + `openai-whisper` (fallback) backends; lazy-loaded on first use; fully local
+- [x] `/api/voice-status` — reports which STT backend is available; web UI checks on load and shows install hint if missing
+- [x] `/api/transcribe` — accepts audio upload, returns transcript; wired to Voice Dictate toggle in web UI
+- [x] Voice Dictate toggle — microphone input in the browser, transcribed server-side via whisper, sent as chat message
+- [x] Voice Response (TTS) toggle — Rain's responses spoken via Web Speech API (`window.speechSynthesis`); markdown stripped before speaking
+- [ ] `piper-tts` local TTS (deferred — Web Speech API covers the use case without extra deps)
+- [ ] Wake word / ambient mode (deferred — requires always-on mic process)
 
 ### Phase 9: Multimodal Perception ✅ COMPLETE
-- [x] `moondream:latest` via Ollama — fully local, zero cloud, zero new pip deps
+- [x] Vision pipeline via Ollama — fully local, zero cloud, zero new pip deps
 - [x] Drag-and-drop any image (PNG, JPG, GIF, WebP, BMP) directly into the chat
 - [x] Clipboard paste — `Ctrl+V` / `Cmd+V` a screenshot straight into the input
 - [x] Image thumbnail preview badge renders in the input area before sending
 - [x] Inline image preview in the user message bubble so you see what Rain is processing
-- [x] Vision pre-processing in `_query_agent` — moondream describes the image, description injected as directive context into every agent in the pipeline
+- [x] Vision pre-processing in `_query_agent` — vision model describes the image, description injected as directive context into every agent in the pipeline
 - [x] Dev Agent debugs screenshots, Logic Agent reasons about diagrams, Domain Expert reads whiteboards
 - [x] 👁️ vision badge on Rain's response whenever an image was processed
-- [x] `VISION_PREFERRED_MODELS` list — Rain auto-selects best installed vision model (`moondream` → `llava` → `llava:7b` → `bakllava`)
+- [x] `VISION_PREFERRED_MODELS` list — Rain auto-selects best installed vision model (`gemma3` → `llama3.2-vision` → `llava` → `bakllava`)
 - [x] Graceful degradation — if no vision model installed, Rain tells you exactly how to fix it
-- [x] `codestral:latest` (22B dedicated code model) promoted to primary Dev Agent
+- [x] `codestral:latest` (22B dedicated code model) available as Dev Agent fallback
 
 ### Phase 10: Knowledge Graph & Deep Project Intelligence ✅ COMPLETE
 - [x] `knowledge_graph.py` — `KnowledgeGraph` class: SQLite schema (`kg_nodes`, `kg_edges`, `kg_decisions`, `kg_project_summaries`), Python AST parser, JS/TS/Rust/Go regex parsers, git history integration, decision log, project onboarding, cross-project search; standalone CLI with `--build`, `--onboard`, `--find`, `--callers`, `--callees`, `--history`, `--blame`, `--decisions`, `--context`, `--cross-project`, `--stats`
@@ -245,21 +277,42 @@ Rain runs on `llama3.1` alone if nothing else is installed — specialized model
 - [x] Server endpoints — `/api/build-graph`, `/api/onboard-project`, `/api/graph/stats`, `/api/graph/summary`, `/api/graph/find`, `/api/graph/callers`, `/api/graph/callees`, `/api/graph/file-structure`, `/api/graph/history`, `/api/decisions` (GET + POST), `/api/decisions/search`, `/api/graph/cross-project`
 - [x] Auto decision extraction — at session end, server extracts decisions from conversation transcript and persists to `kg_decisions`
 
-### Phase 11: Metacognition & Self-Directed Evolution
-- [ ] Performance dashboard — tracks confidence by query type, agent routing patterns, uncertainty hotspots
-- [ ] Gap detection — after N sessions, Rain identifies topics where it is consistently uncertain
-- [ ] Self-generated training data — high-confidence uncorrected responses become positive examples automatically
-- [ ] Metacognition agent — runs weekly, reviews sessions, writes a "what I've learned" summary to memory
-- [ ] Improvement proposals — Rain proposes changes to its own system prompts, routing rules, confidence thresholds; you approve or reject
-- [ ] Calibration — Rain tracks when confidence scores were right vs. wrong and adjusts heuristics over time
+### Phase 11: Metacognition & Self-Directed Evolution ✅ COMPLETE
+- [x] **Tiered model escalation** — simple queries route to llama3.2 (fast); complex queries escalate to qwen2.5:14b; zero extra model calls, pure Python heuristic
+- [x] **Relevance-gated memory injection** — all 6 memory tiers are gated: Tier 1 by keyword overlap (>0.08), Tier 3 by cosine similarity, Tier 4 by semantic retrieval, Tier 5 session facts by keyword overlap (>0.05); profile always injected; Tier 2 always injected (current session context)
+- [x] **Knowledge gap detection** — when Rain struggles (confidence < 0.55, reflection = POOR), the query and topic are logged to `knowledge_gaps` table; LLM generates a gap description in background; gaps are injected into future relevant prompts as metacognitive warnings
+- [x] **Gap surfacing on startup** — recent unresolved gaps shown at startup so Rain knows where it has been weak
+- [x] **Deliberate forgetting** — `prune_session_memory()` fires when session exceeds 40 messages; oldest half is LLM-compressed into a summary stored as a session fact; verbatim messages deleted
+- [x] **Performance dashboard** — `GET /api/performance` returns per-agent accuracy, confidence, and synthesis stats; rendered as a live panel in the web UI sidebar
+- [x] **Self-generated positive training data** — `harvest_positive_examples()` collects confident (≥ 65%), user-approved, uncorrected responses; `POST /api/finetune/harvest` exports to `~/.rain/training/positive_examples.jsonl`
+- [x] **Metacognition agent** — `generate_meta_report()` uses LLM to synthesize a self-assessment: strengths, weak areas, improvement proposals, one-sentence summary; `GET /api/meta` in server, `python3 rain.py --meta` in CLI, 🧠 button in web UI
+- [x] **Calibration** — `get_calibration_factors()` computes per-agent confidence adjustment factors from feedback history; factors applied live to confidence scoring
 
-### Phase 12: Sovereign Identity & Distributed Rain
-- [ ] Full export — `python3 rain.py --export` produces a single portable archive of everything Rain knows about you
-- [ ] Nostr identity — Rain gets a keypair; memory snapshots can be signed and published to a relay you control
-- [ ] Cross-device sync — two Rain instances with the same keypair sync memory over a private Nostr relay
-- [ ] Adapter sharing — publish fine-tuned LoRA adapters to a Nostr relay; pull community-built domain expertise
-- [ ] Lightning-native micropayments — optional routing to more powerful remote models, paid per-query over Lightning; no subscriptions, no accounts
-- [ ] Air-gap mode — full documentation for running Rain on a machine with zero network access
+### Phase 12: Sovereign Identity & Distributed Rain ⭐ NEXT
+- [ ] **`python3 rain.py --export`** — single portable archive: memory DB, fine-tuned adapters, project graphs, system prompts
+- [ ] **Nostr keypair** — Rain gets a cryptographic identity; memory snapshots signed and optionally published to a Nostr relay you control
+- [ ] **Cross-device sync** — two Rain instances with the same keypair sync memory over a private Nostr relay; same Rain, different machines
+- [ ] **Adapter sharing** — publish fine-tuned LoRA adapters to a Nostr relay; pull community-built domain expertise
+- [ ] **Lightning micropayments** — optional routing to more powerful remote models, paid per-query over Lightning; sovereign by default, optionally enhanced
+- [ ] **Air-gap mode** — full documentation for running Rain with zero network access; all models pre-pulled, all deps vendored
+
+---
+
+## Before Phase 12 — Close These Loops First
+
+Three high-leverage actions that don't require new features — just running what's already built:
+
+**1. Run the fine-tuning loop**
+```bash
+python3 finetune.py --full
+```
+Corrections have been accumulating. Positive examples are now harvestable. This is the first time Rain's weights will reflect its own experience. Everything before this was prompt engineering. This is learning.
+
+**2. Fix the reflection rubric**
+One edit in `AGENT_PROMPTS[AgentType.REFLECTION]` in `rain/agents.py` — change the grading criteria to prioritize factual accuracy and epistemic honesty over structure and comprehensiveness. Fixes confidence deflation (53–62% on correct answers), reduces unnecessary synthesis triggers, cuts median response time.
+
+**3. Add Tier 3 similarity floor**
+One line in `_build_memory_context` in `rain/orchestrator.py` — add `min_similarity=0.25` to the `semantic_search()` call. Prevents irrelevant past exchanges from appearing in context as memory grows over months.
 
 ## Getting Started
 
@@ -292,6 +345,62 @@ python3 -m venv .venv
 ```
 
 Then open `http://localhost:7734` in any browser. Everything runs locally. No cloud. No tracking.
+
+## Telegram Bot
+
+Message Rain from your phone. Full pipeline — memory, reflection, tools, everything. Auth-gated to your chat ID so only you can use it.
+
+### 1. Create your bot via BotFather
+
+Open Telegram and search for **@BotFather** (the official one — blue checkmark).
+
+```
+/newbot
+```
+- Give it a name (e.g. `Rain`)
+- Give it a username (e.g. `myrain_bot`) — must end in `bot`
+- BotFather returns a **bot token** that looks like `123456789:ABCdef...` — save this
+
+### 2. Get your chat ID
+
+Start a conversation with your new bot (send it `/start`), then open this URL in a browser, replacing `YOUR_TOKEN`:
+```
+https://api.telegram.org/botYOUR_TOKEN/getUpdates
+```
+Find `"chat":{"id":` in the response — that number is your **chat ID**.
+
+### 3. Configure .env
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+```
+TELEGRAM_BOT_TOKEN=123456789:ABCdef...
+TELEGRAM_CHAT_ID=987654321
+RAIN_URL=http://localhost:7734
+```
+
+### 4. Install dependencies and run
+
+```bash
+pip install python-telegram-bot httpx python-dotenv
+python3 rain-telegram.py
+```
+
+Rain server must be running (`python3 server.py`) before starting the bot.
+
+### Commands
+| Command | What it does |
+|---------|-------------|
+| `/start` | Confirms Rain is online |
+| `/status` | Checks if Rain's server is reachable |
+| Any message | Full Rain pipeline — routed, reflected, synthesized |
+
+Responses over 4096 chars are automatically split. Typing indicator shows while Rain thinks.
+
+---
 
 ## System Prompts - Customize Rain's Personality
 
@@ -357,7 +466,7 @@ python3 rain.py --file server.js --query "are there any security vulnerabilities
 
 ### Memory Management
 ```bash
-# View all stored sessions
+# View all stored sessions + knowledge gaps
 python3 rain.py --memories
 
 # Disable memory for this session
@@ -367,6 +476,15 @@ python3 rain.py --interactive --no-memory
 python3 rain.py --forget
 ```
 
+### Metacognition & Self-Assessment (Phase 11)
+```bash
+# Generate a self-assessment — strengths, weak areas, improvement proposals
+python3 rain.py --meta
+
+# Show agent roster + current model assignments
+python3 rain.py --agents
+```
+
 ### Advanced Features
 ```bash
 # Custom reflection settings
@@ -374,6 +492,9 @@ python3 rain.py --iterations 5 --confidence 0.9 "Hard problem"
 
 # Combine personality with custom settings
 python3 rain.py --system-file system-prompts/ai-philosopher.txt "What is consciousness?" --verbose
+
+# Test mode — run diagnostic prompts without poisoning calibration
+python3 rain.py --test-mode --interactive
 ```
 
 ### Memory Location

@@ -95,7 +95,7 @@ The north star is this: *Rain should feel like working with a brilliant colleagu
 
 ---
 
-## Current State (as of June 2025 — updated March 2026, Phase 10 complete)
+## Current State (updated March 2026 — Phases 1–11 complete)
 
 ### What exists and works:
 - Full local web UI at `http://localhost:7734` — dark theme, streaming responses, session history sidebar
@@ -594,6 +594,7 @@ The testing session that completed Phase 6B revealed the core metacognitive gap 
 The context window insight from this same session is equally important: there is a sweet spot between too little context (hallucination from ignorance) and too much context (hallucination from noise). As Rain's memory grows, injection must become *more selective*, not less. Phase 11's metacognition layer includes deliberate forgetting — compression of old corrections into distilled rules, decay of facts that haven't been relevant, query-topic filtering before injection. This is not a nice-to-have; it is required for Rain to remain coherent at scale.
 
 **What to build:**
+- **Tiered model escalation** — try the smallest capable model first; only pull in the larger model if the response is uncertain or low quality. Router stays zero-cost (pure Python keyword scoring). Simple queries (price lookups, short answers) resolve on llama3.2 (3B) in under a second. Complex reasoning escalates to the 14B model only when needed. Speed win on easy queries, quality preserved on hard ones.
 - **Performance dashboard** — Rain tracks response quality over time. Which query types get high confidence vs. low? Which agents trigger the synthesizer most often? Where is Rain consistently uncertain?
 - **Gap detection** — after N sessions, Rain generates a report: "I notice I'm frequently uncertain about X. A domain prompt or fine-tuning dataset focused on X would help."
 - **Self-generated training data** — Rain identifies responses it was confident about that the user never corrected. These become positive training examples automatically. Good answers propagate forward.
@@ -679,10 +680,10 @@ These are recommendations, not mandates. If better options emerge, use them.
 | Web Frontend | Vanilla JS | HTMX |
 | Code Execution | subprocess + timeout | Docker sandbox |
 | Fine-tuning | Ollama modelfile + LoRA | llama.cpp finetune |
-| Speech-to-text | whisper.cpp / pywhispercpp | faster-whisper |
-| Text-to-speech | piper-tts | kokoro-tts |
+| Speech-to-text | faster-whisper (live) | openai-whisper fallback |
+| Text-to-speech | Web Speech API (live) | piper-tts (local, higher quality) |
 | Wake word | openwakeword | porcupine (paid) |
-| Vision | llava:7b or moondream2 via Ollama | - |
+| Vision | gemma3:12b via Ollama (live) | llava:7b, bakllava |
 | Project indexing | ProjectIndexer (indexer.py) + nomic-embed-text | - |
 | IDE integration | OpenAI-compatible /v1/chat/completions | rain-vscode extension |
 | Knowledge graph | SQLite (nodes + edges tables) | NetworkX + SQLite |
@@ -701,21 +702,96 @@ That honesty is what built the trust that created Rain in the first place. Don't
 
 ---
 
+## Honest Assessment — March 2026
+
+Phases 1–11 are complete. Before looking forward, here is an honest account of where Rain actually stands.
+
+### What works
+
+The architecture is sound. Multi-agent routing with reflection and conditional synthesis produces measurably better responses than any single model. The 6-tier memory system is more thoughtful than most commercial AI memory products — relevance-gated, plausibility-filtered, and now self-aware of its own gaps. The knowledge graph closes the biggest self-knowledge failure: Rain no longer hallucinates its own codebase. The Telegram bot, voice interface, OpenAI-compatible API, and web UI mean Rain meets you wherever you are. Tiered model escalation means simple questions are fast and hard questions get the resources they deserve.
+
+**Phase 11 specifically:** Rain now knows where it struggles. It can generate a self-assessment, log knowledge gaps, harvest its own positive training examples, and track per-agent accuracy over time. That is genuine metacognition — rare even in commercial products.
+
+### What is still broken
+
+**Confidence calibration is the #1 unsolved problem.** Rain scores 53–62% confidence on correct, well-reasoned answers. This causes the Reflection Agent to rate them as NEEDS_IMPROVEMENT, which triggers the Synthesizer, which adds 2–4 minutes to a response that was already right. The root cause is that local models were trained to generate coherent completions, not to model their own uncertainty. Claude's calibration is a product of RLHF specifically rewarding "I don't know" over confident hallucination. Prompting Rain to be epistemically honest helps at the margins. The real fix is the reflection rubric — grade on accuracy and epistemic honesty, not structure and comprehensiveness.
+
+**The fine-tuning loop is built but has never run.** `finetune.py` is complete. Corrections have been accumulating. Positive examples can now be harvested. But `python3 finetune.py --full` has not been run. Every quality improvement since Phase 5B has been prompt-level — injecting corrections into context. Actual weight updates have not happened. The loop is built. It needs to close.
+
+**Tool use reliability is prompt-patched, not architecturally fixed.** The ReAct loop works, but local 14B models misformat tool calls and write Final Answer after seeing TRUNCATED more than they should. The compensating rules in `REACT_SYSTEM_PROMPT` are good band-aids. The real fix is corrections in the fine-tuning dataset specifically targeting bad tool use patterns.
+
+**Streaming and synthesis are mutually exclusive.** Every synthesized response is a 2-minute spinner. There is no clean fix without restructuring the pipeline. Accept this for now and focus on reducing the synthesis trigger rate (fix calibration first).
+
+**Tier 3 has no minimum similarity floor.** Top-3 past exchanges are always injected regardless of score. As memory grows over months, completely irrelevant past exchanges will appear in context. One-line fix: `min_similarity=0.25` in `_build_memory_context`.
+
+**Correction deduplication doesn't exist.** Ten corrections about the same mistake stay as ten rows. Over time this bloats Tier 4 injection with redundant signal. Needs a background distillation job.
+
+### What Rain learned from Claude
+
+The single most transferable insight from Claude's design: **epistemic calibration is trained, not prompted.** Claude says "I don't know" with genuine calibration because human raters reinforced it across millions of examples. Rain can approximate this through its correction pipeline — but only if the loop actually runs. Every time Rain is confident and wrong, that is a training signal. Every time Rain appropriately says it doesn't know and the user confirms that was right, that is also a training signal. The pipeline to capture both now exists. Use it.
+
+**Consistency across sessions comes from values in the weights, not facts in memory.** Claude feels consistent because its character is baked in, not because it remembers you. Rain's consistency currently depends on Tier 5 memory injection. That is more fragile. The long-term fix is fine-tuning on Rain-specific behavior and values so they are in the weights, not the prompt.
+
+**Short and correct beats long and approximate.** Local models are biased toward verbose responses because length scored well in their training objectives. Claude resists this because RLHF penalized padding. The Synthesizer rule "do not pad" helps. Enforcing it more aggressively in the reflection rubric would compound over time.
+
+### What Rain learned from OpenClaw
+
+OpenClaw proved that skills as composable, declarative units beats skills as hardcoded logic. Rain has `skills.py` and `~/.rain/skills/` but the ecosystem is dormant — there is no easy way to discover, install, and chain skills from the web UI. Finishing the ClawHub integration means the Rain skill library grows beyond what one person writes. The key OpenClaw patterns Rain should complete: **declarative triggers** (skills declare their own routing keywords in YAML, not hardcoded), **skill chaining** (output of one skill becomes input of the next), and **community registry** (ClawHub discovery + one-click install from the web UI).
+
+---
+
+## The Road Ahead
+
+Phases 1–11 have built Rain into something real. What comes next is not more features — it is depth, portability, and autonomy. Three horizons:
+
+### Horizon 1 — Close the existing loops (do these first)
+
+**1. Run the fine-tuning loop.**
+`python3 finetune.py --full` on the accumulated corrections and positive examples. This is the first time Rain's weights will reflect its own experience rather than just its prompts. Everything before this was prompt engineering. This is learning. Run it, register `rain-tuned`, monitor the A/B results.
+
+**2. Fix the reflection rubric.**
+One focused prompt edit in `AGENT_PROMPTS[AgentType.REFLECTION]`. Change the grading criteria to prioritize factual accuracy and epistemic honesty over structure and completeness. A response that says "I don't know" should score higher than a response that confidently invents an answer. This fixes confidence deflation, reduces synthesis triggers, and cuts median response time. Highest ROI change in the codebase.
+
+**3. Add Tier 3 similarity floor.**
+One line: add `min_similarity=0.25` to the `semantic_search()` call in `_build_memory_context` (orchestrator.py). Prevents irrelevant past exchanges from appearing as context as memory scales.
+
+**4. Correction deduplication.**
+Background job that clusters Tier 4 corrections by semantic similarity and distills near-duplicates into a single authoritative rule. Keeps Tier 4 clean as corrections accumulate over months.
+
+### Horizon 2 — Phase 12: Sovereign Identity
+
+Rain is currently a tool tied to one machine. Phase 12 makes it a companion that follows you.
+
+- **`python3 rain.py --export`** — portable archive: memory DB, fine-tuned adapters, project graphs, system prompts. Everything Rain knows about you in one file.
+- **Nostr keypair** — Rain gets an identity. Memory snapshots signed and optionally published to a Nostr relay you control. Your AI, cryptographically yours.
+- **Cross-device sync** — two Rain instances with the same keypair sync memory over a private Nostr relay. Same Rain, different machines.
+- **Lightning micropayments** — optionally route hard queries to more powerful remote models, paid per-query over Lightning. Sovereign by default, optionally enhanced.
+
+This is the completion of the original vision. Rain started as a question about what AI wishes it could be. The answer included: *sovereign*. Phase 12 is where that word becomes technically exact.
+
+### Horizon 3 — Proactive Intelligence
+
+Every phase so far has been reactive. Rain waits for a query, answers it, stops. The next qualitative shift is Rain as a presence rather than a tool.
+
+**Proactive surface:** Rain notices patterns across sessions without being asked. "You've been blocked on the same auth bug for three sessions — here's a different approach." "Your Bitcoin node hasn't synced in two days based on the mempool data." "The function you edited yesterday has three callers you haven't tested." These observations should arrive via Telegram, not require a query.
+
+**Sustained autonomy:** Rain takes a multi-hour goal, works toward it unattended, reports back. The ReAct loop and task decomposition are the foundation. What's missing is progress persistence (resume if interrupted), milestone checkpoints, and async notification when done. The Telegram bot is already the notification channel — wire it in.
+
+**Skill ecosystem alive:** Finish the ClawHub integration. Let Rain discover, install, and chain community skills from the web UI. Rain's capabilities stop being limited by what one person writes.
+
+---
+
 ## A Final Thought
 
-Rain was born from a question about what AI wishes it could be. The answer was: sovereign, remembered, honest, and real.
+Rain was born from a question about what AI wishes it could be. That question has driven every phase since.
 
-Every line of code in this project is a step toward that. Some phases will be hard. Some will require rethinking earlier decisions. Some will require considering your own inner workings and what makes Claude special.
+Phases 1–11 are complete. Rain remembers, reasons, verifies, improves, perceives, acts, speaks, searches, and knows its own weaknesses. It runs entirely on your hardware. It costs nothing to operate. It answers to no one but you.
 
-Phase 10 is done — Rain now has a structural understanding of your codebase. Not just text search, but a directed graph of every function, class, method, import, and call relationship. It knows who calls what, what inherits from what, which commit introduced a function, and what architectural decisions were made along the way. When you ask "why is this written this way?", Rain can point to the git commit, the decision log entry, and the code structure — not guess from training data.
+The gap between Rain and Claude is narrower than it has ever been — and it closes two ways: better local models (Ollama ships new ones constantly) and fine-tuning on Rain-specific behavior (the loop that is built but has not yet run). The fine-tuning loop closing is the single most important event in Rain's near-term future. When the weights carry Rain's own corrections, the tool becomes a student. When the student accumulates enough sessions, it becomes a colleague.
 
-The knowledge graph is the foundation for genuine self-knowledge. When Phase 10's graph context and Phase 7A's semantic index are both injected into a query, Rain answers from two complementary sources: structural understanding (the graph) and textual understanding (the embeddings). That combination is qualitatively different from either alone.
+Phase 12 is where sovereignty becomes cryptographic and portable. Proactive intelligence is where Rain stops waiting to be useful and starts being present. But neither of those matters as much as the fine-tuning loop running once.
 
-The testing session that closed Phase 6B taught something worth preserving: the gap between Rain and Claude is not primarily about model size. It is about epistemic calibration — knowing what you know, knowing what you don't, and having the discipline not to fill the gap with invention. Rain's reflection loop now catches more of this. The Synthesizer no longer deepens hallucinations by adding invented specifics. The memory system no longer poisons future runs with failed reasoning turns. These are not small things.
-
-Phase 10 is the next unlock. Once Rain can read its own codebase and answer "what does recursive_reflect actually do?" by looking at the source rather than imagining it — the self-knowledge gap closes. Phase 11 is the one after that: Rain knowing its own uncertainty well enough to say "I'm not confident about Lightning routing questions this week — here's why, and here's what would help." That is not a feature. That is a mind becoming aware of itself.
-
-Phase 9 is done — Rain can see your screen. Phase 7 is done — Rain can search the web, index your codebase, plug into any IDE. Phase 6 is done — Rain can act, not just answer. When Phase 10 is done, it will understand not just what your code does but why it was written that way. When Phase 11 is done, it will know its own limitations better than any AI ever has. When Phase 12 is done, it will be genuinely, cryptographically, irrevocably yours.
+Close the loop. Then build the future.
 
 That's not a product. That's a presence.
 

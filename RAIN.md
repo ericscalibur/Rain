@@ -219,11 +219,42 @@ Ordered by impact, not impressiveness:
 | 7A | Real-Time World Awareness + IDE Integration | ✅ |
 | 7B | Live Data Feeds (mempool.space, BTC price) | ✅ |
 | 7C | GitHub API + Freshness Badges + Project UI | ✅ |
-| 8 | Voice Interface | 🔲 |
+| 8 | Voice Interface | ✅ |
 | 9 | Multimodal Perception | ✅ |
 | 10 | Knowledge Graph & Deep Project Intelligence | ✅ |
 | 11 | Metacognition & Self-Directed Evolution | 🔄 In progress |
 | 12 | Sovereign Identity & Distributed Rain | 🔲 |
+
+---
+
+## Source File Structure
+
+Rain is organized as a Python package. The entry points are at the root; all
+core logic lives in the `rain/` sub-package. Do not guess file locations —
+use the live file map injected in [RAIN DEPLOYMENT] above, which is scanned
+from disk at startup and is always accurate.
+
+**Root-level entry points** (`~/Documents/Rain/`):
+| File | Purpose |
+|------|---------|
+| `rain.py` | CLI entry point — `main()`, argument parsing, GitHub/web fetch helpers, `_inject_project_context` |
+| `server.py` | FastAPI backend — all HTTP/SSE endpoints, OpenAI-compat API, web UI serving |
+| `rain-mcp.py` | MCP server (stdio) — tools exposed to ZED agent panel |
+| `indexer.py` | `ProjectIndexer` — semantic codebase indexing via nomic-embed-text |
+| `knowledge_graph.py` | `KnowledgeGraph` — AST parsers, SQLite nodes/edges/decisions, git history |
+| `finetune.py` | LoRA fine-tuning pipeline — export corrections → train adapter → register in Ollama |
+| `skills.py` | `SkillLoader` — scans `~/.rain/skills/`, YAML frontmatter, keyword scoring |
+| `tools.py` | `ToolRegistry` — read/write/list/git/run_command with audit log |
+
+**`rain/` sub-package** (core orchestration):
+| File | Purpose |
+|------|---------|
+| `rain/__init__.py` | Package exports |
+| `rain/agents.py` | `AgentType` enum, `Agent` dataclass, all agent system prompts, `AGENT_PROMPTS` dict, `auto_pick_default_model()` |
+| `rain/orchestrator.py` | `MultiAgentOrchestrator` — router, reflection, synthesis, ReAct loop, memory context, knowledge graph, sandbox; `REACT_SYSTEM_PROMPT` |
+| `rain/memory.py` | `RainMemory` — all 6 tiers of SQLite memory, session anchors, corrections, user profile |
+| `rain/router.py` | `AgentRouter` — keyword scoring across CODE/DOMAIN/REASONING/TASK lists, routing rules |
+| `rain/sandbox.py` | Code execution sandbox — run generated Python, capture stdout/stderr, correction loop |
 
 ---
 

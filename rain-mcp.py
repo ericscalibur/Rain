@@ -456,6 +456,15 @@ def _call_write_file(args: dict) -> str:
         root = Path(project_path) if project_path else Path(_RAIN_DIR)
         p = root / path_str
 
+    # Path traversal guard — resolve to canonical path and confirm it stays
+    # within an allowed root (project_path or Rain's own directory).
+    try:
+        p = p.resolve()
+        allowed_root = Path(project_path).resolve() if project_path else Path(_RAIN_DIR).resolve()
+        p.relative_to(allowed_root)  # raises ValueError if outside
+    except ValueError:
+        return f"❌ Path traversal rejected: {path_str} resolves outside allowed directory"
+
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -649,6 +658,19 @@ def _call_read_file(args: dict) -> str:
                 p = Path(_RAIN_DIR) / Path(*parts[1:])
             else:
                 p = Path(_RAIN_DIR) / path_str
+
+    # Path traversal guard — resolved path must stay within allowed root.
+    try:
+        resolved = p.resolve()
+        allowed_root = Path(project_path).resolve() if project_path else Path(_RAIN_DIR).resolve()
+        # Allow reads from the Rain dir or the specified project dir
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError:
+            # Also allow reads from Rain's own directory when a project_path was given
+            resolved.relative_to(Path(_RAIN_DIR).resolve())
+    except ValueError:
+        return f"❌ Path traversal rejected: {path_str} resolves outside allowed directories"
 
     if not p.exists():
         # Last resort: search for the filename anywhere inside Rain's directory

@@ -423,9 +423,10 @@ class RainMemory:
                 if profile_rows:
                     lines = [f"  {r['key']}: {r['value']}" for r in profile_rows]
                     parts.append(
-                        "What you know about this user — answer DIRECTLY from these facts "
-                        "when asked about their project, what they are building, their preferences, "
-                        "or their background. Do not claim ignorance when facts are listed here:\n"
+                        "What you know about this user — use ONLY these exact stored facts. "
+                        "Do NOT extrapolate, infer, or invent any detail beyond what is explicitly listed. "
+                        "If the user asks about something not present in this list, say honestly that "
+                        "you don't have that stored. Fabricating user facts is worse than admitting ignorance:\n"
                         + "\n".join(lines)
                     )
 
@@ -464,11 +465,11 @@ class RainMemory:
         if not parts:
             return ""
         header = (
-            "\n\n[STORED MEMORY — The following are facts you have accumulated about "
-            "this user across previous sessions. When the user asks what you know about "
-            "their project, what they are building, their preferences, or their background, "
-            "answer DIRECTLY from the stored facts below. Do NOT say you have no information "
-            "or that you don't know their project when facts are explicitly listed here.]"
+            "\n\n[STORED MEMORY — Facts accumulated about this user across previous sessions. "
+            "Use ONLY the exact facts listed below — do NOT extrapolate, add detail, or assert "
+            "anything not explicitly stored here. If a specific fact is absent from this list, "
+            "say so honestly rather than guessing. Fabricating user facts is a worse outcome "
+            "than admitting you don't have that information stored.]"
         )
         return header + "\n\n" + "\n\n".join(parts)
 
@@ -501,14 +502,30 @@ class RainMemory:
             transcript += f"{role}: {content}\n\n"
 
         prompt = (
-            "Summarize this conversation in one short sentence (max 120 characters). "
-            "Reply with ONLY the summary, no preamble, no labels.\n\n"
-            f"{transcript}\nSummary:"
+            "Analyze this conversation and produce a structured summary.\n\n"
+            "First, think through the session in a <analysis> block (this will be discarded). "
+            "Then write a <summary> block with these nine sections — be concise, factual, no fluff:\n\n"
+            "1. PRIMARY REQUESTS: What the user was trying to accomplish\n"
+            "2. TECHNICAL CONCEPTS: Key ideas, patterns, or technologies discussed\n"
+            "3. FILES/CODE CHANGED: What was built, edited, or read\n"
+            "4. ERRORS/RESOLUTIONS: Any problems encountered and how they were resolved\n"
+            "5. DECISIONS MADE: Architecture choices, trade-offs accepted\n"
+            "6. USER MESSAGES (verbatim): Direct quotes from the user that reflect intent or correction\n"
+            "7. PENDING TASKS: Anything explicitly left unfinished\n"
+            "8. CURRENT WIP: What was in-flight at session end\n"
+            "9. NEXT STEPS: What should happen next (quote user directly if stated)\n\n"
+            "Format exactly like this:\n"
+            "<analysis>\n[your private reasoning here]\n</analysis>\n"
+            "<summary>\n1. PRIMARY REQUESTS: ...\n2. TECHNICAL CONCEPTS: ...\n"
+            "3. FILES/CODE CHANGED: ...\n4. ERRORS/RESOLUTIONS: ...\n"
+            "5. DECISIONS MADE: ...\n6. USER MESSAGES: ...\n"
+            "7. PENDING TASKS: ...\n8. CURRENT WIP: ...\n9. NEXT STEPS: ...\n</summary>\n\n"
+            f"Conversation:\n{transcript}"
         )
 
         try:
             payload = json.dumps({
-                "model": "llama3.1",
+                "model": "llama3.2",
                 "prompt": prompt,
                 "stream": False,
             }).encode("utf-8")
@@ -518,16 +535,23 @@ class RainMemory:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            summary = data.get("response", "").strip()
-            # Strip any model preamble like "Here is a summary:" or "Summary:"
-            for prefix in ("summary:", "here is", "here's"):
-                if summary.lower().startswith(prefix):
-                    summary = summary[summary.index(":") + 1:].strip()
-            # Cap at 120 chars at a word boundary
-            if len(summary) > 120:
-                summary = summary[:120].rsplit(" ", 1)[0].rstrip(".,;") + "…"
+            raw = data.get("response", "").strip()
+
+            # Extract <summary> block — strip the <analysis> scratchpad
+            import re as _re
+            m = _re.search(r"<summary>(.*?)</summary>", raw, _re.DOTALL)
+            if m:
+                summary = m.group(1).strip()
+            else:
+                # Fallback: strip any <analysis> block and use the rest
+                summary = _re.sub(r"<analysis>.*?</analysis>", "", raw, flags=_re.DOTALL).strip()
+
+            # Cap at 2000 chars (structured summaries are longer than the old one-liner)
+            if len(summary) > 2000:
+                summary = summary[:2000].rsplit("\n", 1)[0] + "\n[truncated]"
+
             return summary if summary else None
         except Exception:
             return None
@@ -560,6 +584,17 @@ class RainMemory:
 
     # ── Feedback / Self-Improvement (Phase 5B) ────────────────────────────
 
+    @staticmethod
+    def _token_overlap(a: str, b: str) -> float:
+        """Jaccard similarity on word tokens — cheap near-duplicate detection.
+        Returns 0.0–1.0; values above 0.8 indicate near-identical strings.
+        """
+        tokens_a = set(a.lower().split())
+        tokens_b = set(b.lower().split())
+        if not tokens_a or not tokens_b:
+            return 0.0
+        return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
     def save_feedback(self, query: str, response: str, rating: str,
                       correction: str = None, agent_type: str = None,
                       confidence: float = None):
@@ -569,12 +604,50 @@ class RainMemory:
         learns which agents produce reliable responses and adjusts their
         confidence scores accordingly.
 
+        For bad ratings with corrections, near-duplicate detection runs before
+        inserting: if a correction with >= 80% query overlap AND >= 70% correction
+        text overlap already exists, we bump its access_count and update the
+        correction text rather than creating a duplicate row. This prevents the
+        same mistake from accumulating dozens of identical entries and
+        over-weighting a single error in calibration.
+
         In test_mode, feedback writes are suppressed so diagnostic sessions
         can't poison the calibration table.
         """
         if self.test_mode:
             print("🧪 TEST MODE — feedback not recorded", flush=True)
             return
+
+        # ── Near-duplicate dedup for corrections ──────────────────────────
+        # Only applies to bad ratings with a correction supplied.
+        # Uses cheap token-overlap (no embeddings needed) — runs synchronously
+        # before the INSERT so we never create the duplicate in the first place.
+        if rating == 'bad' and correction:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    existing = conn.execute(
+                        """SELECT id, query, correction
+                           FROM feedback
+                           WHERE rating = 'bad' AND correction IS NOT NULL AND correction != ''
+                           ORDER BY id DESC LIMIT 100"""
+                    ).fetchall()
+                for row_id, ex_query, ex_correction in existing:
+                    if (self._token_overlap(query, ex_query) >= 0.80 and
+                            self._token_overlap(correction, ex_correction) >= 0.70):
+                        # Near-duplicate — update instead of inserting
+                        with sqlite3.connect(self.db_path) as conn:
+                            conn.execute(
+                                """UPDATE feedback
+                                   SET access_count = COALESCE(access_count, 0) + 1,
+                                       correction   = ?,
+                                       timestamp    = ?
+                                   WHERE id = ?""",
+                                (correction, datetime.now().isoformat(), row_id)
+                            )
+                        return  # skip INSERT and background threads
+            except Exception:
+                pass  # dedup failure is non-fatal — fall through to normal INSERT
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """INSERT INTO feedback
@@ -915,12 +988,12 @@ class RainMemory:
 
         scored = []
         for row in rows:
-            _, fb_query, fb_response, fb_correction, emb_blob, fb_plausibility, _ts, _ac = row
+            _, fb_query, fb_response, fb_correction, emb_blob, fb_plausibility, fb_ts, _ac = row
             if emb_blob:
                 try:
                     fb_vec = json.loads(emb_blob.decode("utf-8"))
                     sim = self._cosine_similarity(query_vec, fb_vec)
-                    scored.append((sim, fb_query, fb_response, fb_correction, fb_plausibility))
+                    scored.append((sim, fb_query, fb_response, fb_correction, fb_plausibility, fb_ts))
                 except Exception:
                     pass
 
@@ -929,13 +1002,14 @@ class RainMemory:
         results = []
         for item in scored[:limit]:
             if item[0] > 0.5:
-                s, q, r, c, plausibility = item
+                s, q, r, c, plausibility, ts = item
                 results.append({
                     "query": q,
                     "response": r,
                     "correction": _annotate(c, plausibility),
                     "similarity": round(s, 2),
                     "plausibility": plausibility,
+                    "timestamp": ts,
                 })
         return results
 
@@ -1109,6 +1183,21 @@ class RainMemory:
             return
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # Dedup: skip if an identical or near-identical gap_description
+                # was already logged for this session (prevents duplicate entries
+                # when synthesis fires twice on similar queries in the same session).
+                if gap:
+                    existing = conn.execute(
+                        """SELECT gap_description FROM knowledge_gaps
+                           WHERE session_id = ?
+                           ORDER BY timestamp DESC LIMIT 10""",
+                        (session_id,)
+                    ).fetchall()
+                    gap_lower = gap.lower().strip()
+                    for row in existing:
+                        prev = (row[0] or "").lower().strip()
+                        if prev and (prev == gap_lower or prev[:60] == gap_lower[:60]):
+                            return  # duplicate — skip
                 conn.execute(
                     """INSERT INTO knowledge_gaps
                            (session_id, query, gap_description, confidence, rating, timestamp)
@@ -1141,6 +1230,232 @@ class RainMemory:
                 return [dict(r) for r in rows]
         except Exception:
             return []
+
+    def get_performance_stats(self) -> dict:
+        """
+        Phase 11: return per-agent performance metrics for the dashboard.
+
+        Queries the feedback table and returns:
+          - per-agent: total ratings, good/bad counts, accuracy, avg confidence
+          - overall: total sessions, responses, synthesis stats, gap count
+          - rolling_30d: same breakdowns restricted to last 30 days
+        Always returns a valid dict — never raises.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                # ── Per-agent stats (all time) ─────────────────────────────
+                agent_rows = conn.execute("""
+                    SELECT agent_type,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END) AS good,
+                           SUM(CASE WHEN rating='bad'  THEN 1 ELSE 0 END) AS bad,
+                           ROUND(AVG(confidence), 3) AS avg_conf
+                    FROM feedback
+                    WHERE agent_type IS NOT NULL
+                    GROUP BY agent_type
+                    ORDER BY total DESC
+                """).fetchall()
+
+                # ── Per-agent stats (rolling 30d) ──────────────────────────
+                agent_30d = conn.execute("""
+                    SELECT agent_type,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END) AS good,
+                           SUM(CASE WHEN rating='bad'  THEN 1 ELSE 0 END) AS bad,
+                           ROUND(AVG(confidence), 3) AS avg_conf
+                    FROM feedback
+                    WHERE agent_type IS NOT NULL
+                      AND timestamp > datetime('now', '-30 days')
+                    GROUP BY agent_type
+                    ORDER BY total DESC
+                """).fetchall()
+
+                # ── Overall totals ─────────────────────────────────────────
+                totals = conn.execute("""
+                    SELECT COUNT(*) AS total_feedback,
+                           SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END) AS total_good,
+                           SUM(CASE WHEN rating='bad'  THEN 1 ELSE 0 END) AS total_bad,
+                           ROUND(AVG(confidence), 3) AS overall_avg_conf
+                    FROM feedback
+                """).fetchone()
+
+                total_sessions = conn.execute(
+                    "SELECT COUNT(*) FROM sessions"
+                ).fetchone()[0]
+
+                # ── Synthesis stats ────────────────────────────────────────
+                synth = conn.execute("""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END) AS improved,
+                           SUM(CASE WHEN rating='bad'  THEN 1 ELSE 0 END) AS degraded
+                    FROM synthesis_log
+                    WHERE rating IS NOT NULL
+                """).fetchone()
+
+                # ── Gap count ──────────────────────────────────────────────
+                gap_count = conn.execute(
+                    "SELECT COUNT(*) FROM knowledge_gaps WHERE resolved = 0"
+                ).fetchone()[0]
+
+            def _row_to_dict(r):
+                total = r["total"] or 0
+                good  = r["good"]  or 0
+                return {
+                    "agent":    r["agent_type"],
+                    "total":    total,
+                    "good":     good,
+                    "bad":      r["bad"] or 0,
+                    "accuracy": round(good / total, 3) if total else None,
+                    "avg_conf": r["avg_conf"],
+                }
+
+            t = totals or {}
+            total_f = t["total_feedback"] or 0
+            total_g = t["total_good"]     or 0
+
+            return {
+                "by_agent":      [_row_to_dict(r) for r in agent_rows],
+                "by_agent_30d":  [_row_to_dict(r) for r in agent_30d],
+                "overall": {
+                    "sessions":      total_sessions,
+                    "total_feedback": total_f,
+                    "accuracy":      round(total_g / total_f, 3) if total_f else None,
+                    "avg_confidence": t["overall_avg_conf"],
+                },
+                "synthesis": {
+                    "rated":    synth["total"]    if synth else 0,
+                    "improved": synth["improved"] if synth else 0,
+                    "degraded": synth["degraded"] if synth else 0,
+                },
+                "open_gaps": gap_count,
+            }
+        except Exception:
+            return {"by_agent": [], "by_agent_30d": [], "overall": {}, "synthesis": {}, "open_gaps": 0}
+
+    def harvest_positive_examples(self, min_confidence: float = 0.65, limit: int = 200) -> list:
+        """
+        Phase 11: collect confident, user-approved responses as positive training data.
+
+        Selects feedback rows where:
+          - rating = 'good'
+          - confidence >= min_confidence (Rain was confident AND user agreed)
+          - no correction attached (not an "acceptable but wrong" edge case)
+
+        Returns a list of {query, response, confidence, agent_type} dicts formatted
+        for JSONL export alongside the corrections from finetune.py.
+        Never raises.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT query, response, confidence, agent_type
+                       FROM feedback
+                       WHERE rating = 'good'
+                         AND (correction IS NULL OR correction = '')
+                         AND confidence >= ?
+                       ORDER BY confidence DESC, timestamp DESC
+                       LIMIT ?""",
+                    (min_confidence, limit),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def generate_meta_report(self, model_query_fn) -> str:
+        """
+        Phase 11: metacognition agent — synthesize a self-assessment report.
+
+        Uses the LLM to review recent performance stats, gap patterns, and
+        calibration data and produce a structured report:
+          - what Rain is doing well (high accuracy, consistent confidence)
+          - where Rain is struggling (low accuracy agents, frequent gaps)
+          - concrete improvement proposals (prompt tweaks, fine-tuning targets)
+
+        model_query_fn: callable(prompt: str) -> str — same interface as the
+        inline model calls throughout the orchestrator.
+
+        Returns the report as a markdown string. Falls back to a raw stats
+        summary if the model call fails.
+        """
+        stats  = self.get_performance_stats()
+        gaps   = self.get_top_gaps(limit=10)
+
+        # ── Build a compact stats summary for the prompt ───────────────────
+        lines = ["## Recent performance stats\n"]
+        if stats["by_agent_30d"]:
+            lines.append("**Per-agent (last 30 days):**")
+            for a in stats["by_agent_30d"]:
+                acc = f"{a['accuracy']:.0%}" if a["accuracy"] is not None else "n/a"
+                conf = f"{a['avg_conf']:.2f}" if a["avg_conf"] else "n/a"
+                lines.append(
+                    f"  - {a['agent']}: {a['total']} ratings, "
+                    f"{acc} accuracy, avg confidence {conf}"
+                )
+        elif stats["by_agent"]:
+            lines.append("**Per-agent (all time):**")
+            for a in stats["by_agent"]:
+                acc = f"{a['accuracy']:.0%}" if a["accuracy"] is not None else "n/a"
+                lines.append(f"  - {a['agent']}: {a['total']} ratings, {acc} accuracy")
+
+        ov = stats.get("overall", {})
+        if ov.get("total_feedback"):
+            acc = f"{ov['accuracy']:.0%}" if ov.get("accuracy") is not None else "n/a"
+            lines.append(
+                f"\n**Overall:** {ov['total_feedback']} rated responses, "
+                f"{acc} accuracy, avg confidence {ov.get('avg_confidence', 'n/a')}"
+            )
+
+        sy = stats.get("synthesis", {})
+        if sy.get("rated"):
+            lines.append(
+                f"\n**Synthesis:** {sy['rated']} runs rated — "
+                f"{sy['improved']} improved, {sy['degraded']} degraded"
+            )
+
+        if gaps:
+            lines.append("\n## Recent knowledge gaps\n")
+            for g in gaps:
+                desc = g.get("gap_description") or g.get("query", "")
+                lines.append(f"  - {desc[:120]}")
+
+        stats_block = "\n".join(lines)
+
+        prompt = (
+            "You are Rain's metacognition agent. Your job is to help Rain understand "
+            "its own strengths and weaknesses based on real performance data.\n\n"
+            f"{stats_block}\n\n"
+            "Write a concise self-assessment report (200-350 words) with these sections:\n"
+            "1. **Strengths** — where Rain is performing well and why\n"
+            "2. **Weak areas** — where Rain is struggling (low accuracy, frequent gaps, "
+            "confidence that doesn't match outcomes)\n"
+            "3. **Improvement proposals** — 2-3 specific, actionable things that would "
+            "help: prompt adjustments, routing tweaks, fine-tuning targets, or "
+            "architectural changes\n"
+            "4. **One sentence summary** — the single most important thing to address\n\n"
+            "Be honest, specific, and brief. No filler. Use only the data above — "
+            "do not invent stats that aren't present."
+        )
+
+        try:
+            report = model_query_fn(prompt)
+            if report and len(report.strip()) > 50:
+                return (
+                    "# Rain Self-Assessment\n"
+                    f"*Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
+                    + report.strip()
+                )
+        except Exception:
+            pass
+
+        # Fallback: return the raw stats block
+        return (
+            "# Rain Self-Assessment (raw stats — model unavailable)\n"
+            f"*Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
+            + stats_block
+        )
 
     def prune_session_memory(self, keep_recent: int = 20, model_query_fn=None) -> int:
         """Deliberate forgetting — compress old session messages when the session grows large.
@@ -1184,11 +1499,13 @@ class RainMemory:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    """INSERT INTO session_facts (session_id, fact, confidence, timestamp)
-                       VALUES (?, ?, ?, ?)""",
+                    """INSERT INTO session_facts
+                           (session_id, fact_type, fact_key, fact_value, timestamp)
+                       VALUES (?, ?, ?, ?, ?)""",
                     (self.session_id,
+                     "compressed_history",
+                     "summary",
                      f"[Pruned memory summary] {compressed}",
-                     0.9,
                      datetime.now().isoformat())
                 )
                 # Delete the pruned messages
