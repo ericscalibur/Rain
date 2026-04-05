@@ -515,6 +515,14 @@ class MultiAgentOrchestrator:
         "stop the interview", "end the interview", "let's move on",
         "forget the interview", "switch topics", "never mind",
     ]
+    # Task-like prefixes that bypass interview mode — user is issuing a command,
+    # not answering an interview question.
+    _INTERVIEW_TASK_BYPASS_PREFIXES = (
+        "add ", "remove ", "delete ", "create ", "make ", "update ", "edit ",
+        "show ", "list ", "get ", "find ", "search ", "open ", "close ",
+        "run ", "execute ", "start ", "stop ", "restart ", "check ",
+        "remind ", "schedule ", "set ", "toggle ", "enable ", "disable ",
+    )
 
     def _detect_session_mode(self) -> Optional[str]:
         """
@@ -2194,6 +2202,11 @@ class MultiAgentOrchestrator:
         # If so, override routing and inject context so the agent doesn't break
         # the session by treating the user's answer as a new query topic.
         _session_mode = self._detect_session_mode()
+        _query_lower = query.lower().lstrip()
+        if _session_mode == "INTERVIEW" and any(
+            _query_lower.startswith(p) for p in self._INTERVIEW_TASK_BYPASS_PREFIXES
+        ):
+            _session_mode = None  # task request — don't hijack with interview mode
         if _session_mode == "INTERVIEW":
             print(f"{_ts()} 🎙️  Interview mode active — overriding routing to LOGIC", flush=True)
             # Build an injected preamble so the agent knows what's happening
@@ -2242,6 +2255,57 @@ class MultiAgentOrchestrator:
 
         # Memory save happens AFTER _query_agent (see below) so that
         # _last_vision_desc is already populated when we write to memory.
+
+        # ── 0c. File-reference pre-read ───────────────────────────────
+        # If the query explicitly names a file (e.g. "show me Erics-to-do.md")
+        # or uses a known alias ("my to-do list", "my todo"), proactively read
+        # that file from disk and inject its content into the query before
+        # routing.  This prevents models from hallucinating file contents when
+        # they should be reading from disk.
+        _FILE_ALIASES: dict = {
+            "to-do": "Erics-to-do.md",
+            "todo": "Erics-to-do.md",
+            "to do": "Erics-to-do.md",
+        }
+        _query_lower_fc = query.lower()
+        _files_to_inject: list = []
+
+        # 1. Detect alias phrases like "my to-do list", "my todo", "on my to-do"
+        for alias, fname in _FILE_ALIASES.items():
+            if alias in _query_lower_fc:
+                _files_to_inject.append(fname)
+                break
+
+        # 2. Detect explicit filename mentions (any word ending in a file extension)
+        import re as _re_fc
+        for _fname in _re_fc.findall(r'\b[\w.-]+\.\w{1,5}\b', query):
+            if _fname not in _files_to_inject:
+                _files_to_inject.append(_fname)
+
+        # 3. Read and inject each file if it exists
+        if _files_to_inject and self.tools:
+            _injected_blocks = []
+            _search_dirs = [Path('.')]
+            if self.project_path:
+                _search_dirs.insert(0, Path(self.project_path))
+            for _fname in _files_to_inject:
+                _fpath = None
+                for _sdir in _search_dirs:
+                    _candidate = _sdir / _fname
+                    if _candidate.exists():
+                        _fpath = _candidate
+                        break
+                if _fpath:
+                    try:
+                        _content = _fpath.read_text(encoding='utf-8')
+                        _injected_blocks.append(
+                            f"[File: {_fname}]\n{_content.strip()}"
+                        )
+                        print(f"{_ts()} 📄 Pre-read: {_fname}", flush=True)
+                    except Exception:
+                        pass
+            if _injected_blocks:
+                query = '\n\n'.join(_injected_blocks) + '\n\n---\n\n' + query
 
         # ── 1. Route ──────────────────────────────────────────────────
         # Check custom agents first — keyword match against agent name/description
