@@ -386,6 +386,79 @@ def _cli_duckduckgo_search(query: str, max_results: int = 5) -> list:
         return []
 
 
+def _inject_file_context(query: str) -> str:
+    """
+    Detect queries about to-do lists or named markdown files and inject the
+    actual file contents so the model reads real data instead of hallucinating.
+    """
+    import os as _os
+    import re as _re
+
+    todo_patterns = [
+        r"\bto[\s-]?do\b",
+        r"\btodo\b",
+        r"erics[\s-]to[\s-]do",
+        r"eric'?s to.?do",
+    ]
+    md_file_pattern = r"([\w\-]+\.md)\b"
+
+    lower = query.lower()
+    candidate_paths: list[str] = []
+
+    if any(_re.search(p, lower) for p in todo_patterns):
+        candidate_paths.append("Erics-to-do.md")
+
+    for match in _re.finditer(md_file_pattern, query, _re.IGNORECASE):
+        fname = match.group(1)
+        if fname not in candidate_paths:
+            candidate_paths.append(fname)
+
+    if not candidate_paths:
+        return query
+
+    # Resolve the Rain repo root. When running from a worktree the __file__
+    # path includes /.claude/worktrees/<name>/ — walk up to the git root.
+    script_dir = _os.path.dirname(_os.path.abspath(__file__))
+    repo_root = script_dir
+    for _ in range(5):
+        if _os.path.isdir(_os.path.join(repo_root, ".git")):
+            break
+        parent = _os.path.dirname(repo_root)
+        if parent == repo_root:
+            break
+        repo_root = parent
+
+    search_dirs = [
+        repo_root,
+        script_dir,
+        _os.path.join(repo_root, "data"),
+        _os.path.join(repo_root, "memory"),
+        _os.path.join(repo_root, "context"),
+        _os.path.expanduser("~/.rain"),
+    ]
+
+    injected_blocks: list[str] = []
+    for fname in candidate_paths:
+        for directory in search_dirs:
+            fpath = _os.path.join(directory, fname)
+            if _os.path.isfile(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as fh:
+                        contents = fh.read().strip()
+                    injected_blocks.append(
+                        f"[File: {fname}]\n{contents}\n[End of {fname}]"
+                    )
+                    print(f"\U0001f4cb Injected file context from: {fname}")
+                except Exception:
+                    pass
+                break
+
+    if injected_blocks:
+        block = "\n\n".join(injected_blocks)
+        return f"{block}\n\n---\n\n{query}"
+    return query
+
+
 def _inject_project_context(query: str, project_path: str) -> str:
     """
     Search the project index for chunks relevant to `query` and prepend them.
@@ -691,7 +764,8 @@ def main():
                             print("\U0001f4da No history yet")
                         continue
 
-                    augmented_query = _inject_project_context(query, args.project) if args.project else query
+                    augmented_query = _inject_file_context(query)
+                    augmented_query = _inject_project_context(augmented_query, args.project) if args.project else augmented_query
                     result = rain.recursive_reflect(augmented_query, verbose=args.verbose)
                     if result:
                         print(f"\n\U0001f31f Final Answer (confidence: {result.confidence:.2f}, "
@@ -792,6 +866,7 @@ def main():
                         )
                     else:
                         print("\U0001f310 No results found \u2014 using local knowledge")
+                query = _inject_file_context(query)
                 if args.project:
                     query = _inject_project_context(query, args.project)
 
