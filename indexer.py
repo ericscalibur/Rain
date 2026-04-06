@@ -699,6 +699,310 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (mag_a * mag_b)
 
 
+# ── NoteIndexer ───────────────────────────────────────────────────────
+
+NOTES_DIR = Path.home() / ".rain" / "notes"
+NOTES_EXTENSIONS = frozenset({".md", ".txt"})
+
+
+class NoteIndexer:
+    """
+    Indexes personal notes from ~/.rain/notes/ for semantic search.
+
+    Drop any .md or .txt file into ~/.rain/notes/ and Rain will chunk,
+    embed, and retrieve relevant excerpts automatically.  Uses the same
+    SQLite DB and nomic-embed-text pipeline as ProjectIndexer.
+
+    Table: notes_chunks
+        id          INTEGER PRIMARY KEY
+        filepath    TEXT NOT NULL          -- absolute path to the note file
+        chunk_text  TEXT NOT NULL
+        symbol      TEXT                   -- optional heading/section label
+        embedding   BLOB NOT NULL
+        indexed_at  TEXT NOT NULL
+    """
+
+    def __init__(self, db_path: Optional[Path] = None, notes_dir: Optional[Path] = None):
+        self.db_path   = db_path   or (Path.home() / ".rain" / "memory.db")
+        self.notes_dir = notes_dir or NOTES_DIR
+        self.notes_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_table()
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def index_notes(self, force: bool = False) -> Dict:
+        """
+        Walk notes_dir and index all .md / .txt files.
+
+        Returns:
+            {"files_indexed": int, "files_skipped": int,
+             "chunks_total": int, "errors": int}
+        """
+        files_indexed = 0
+        files_skipped = 0
+        chunks_total  = 0
+        errors        = 0
+
+        for note_path in sorted(self.notes_dir.rglob("*")):
+            if not note_path.is_file():
+                continue
+            if note_path.suffix.lower() not in NOTES_EXTENSIONS:
+                continue
+
+            filepath_str = str(note_path)
+            try:
+                if not force and self._is_indexed(filepath_str):
+                    files_skipped += 1
+                    continue
+
+                text = note_path.read_text(encoding="utf-8", errors="replace").strip()
+                if not text:
+                    files_skipped += 1
+                    continue
+
+                chunks = self._chunk_note(text, note_path)
+                if not chunks:
+                    files_skipped += 1
+                    continue
+
+                self._index_note(filepath_str, chunks)
+                files_indexed += 1
+                chunks_total  += len(chunks)
+            except Exception:
+                errors += 1
+
+        return {
+            "files_indexed": files_indexed,
+            "files_skipped": files_skipped,
+            "chunks_total":  chunks_total,
+            "errors":        errors,
+        }
+
+    def search_notes(self, query: str, top_k: int = 3) -> List[Dict]:
+        """
+        Find the most relevant note chunks for *query*.
+
+        Returns list of dicts sorted by similarity (highest first):
+            {"filepath": str, "chunk_text": str, "symbol": str,
+             "similarity": float}
+        """
+        query_vec = self._embed(query)
+        if query_vec is None:
+            return []
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT filepath, chunk_text, symbol, embedding FROM notes_chunks"
+                ).fetchall()
+        except Exception:
+            return []
+
+        if not rows:
+            return []
+
+        try:
+            import numpy as np
+            parsed = []
+            vecs   = []
+            for row in rows:
+                try:
+                    vec = json.loads(row["embedding"].decode("utf-8"))
+                    parsed.append(row)
+                    vecs.append(vec)
+                except Exception:
+                    continue
+
+            if not parsed:
+                return []
+
+            matrix = np.array(vecs, dtype=np.float32)
+            q      = np.array(query_vec, dtype=np.float32)
+            norms  = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q) + 1e-10
+            sims   = (matrix @ q / norms).tolist()
+
+            results = []
+            for sim, row in zip(sims, parsed):
+                if sim >= MIN_SIMILARITY:
+                    results.append({
+                        "filepath":   row["filepath"],
+                        "chunk_text": row["chunk_text"],
+                        "symbol":     row["symbol"] or "",
+                        "similarity": round(sim, 3),
+                    })
+
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:top_k]
+
+        except ImportError:
+            # numpy unavailable — fall back to pure-Python
+            scored = []
+            for row in rows:
+                try:
+                    vec = json.loads(row["embedding"].decode("utf-8"))
+                    sim = _cosine_similarity(query_vec, vec)
+                    if sim >= MIN_SIMILARITY:
+                        scored.append({
+                            "filepath":   row["filepath"],
+                            "chunk_text": row["chunk_text"],
+                            "symbol":     row["symbol"] or "",
+                            "similarity": round(sim, 3),
+                        })
+                except Exception:
+                    continue
+            scored.sort(key=lambda x: x["similarity"], reverse=True)
+            return scored[:top_k]
+
+    def build_context_block(self, query: str, top_k: int = 3) -> str:
+        """
+        Return a formatted context string ready to inject into an agent prompt.
+        Returns empty string if no relevant notes found.
+        """
+        hits = self.search_notes(query, top_k=top_k)
+        if not hits:
+            return ""
+
+        lines = ["[Notes context from ~/.rain/notes/]"]
+        for h in hits:
+            label = h["symbol"] or Path(h["filepath"]).name
+            lines.append(
+                f"\n--- {label} ({round(h['similarity'] * 100)}% match) ---"
+            )
+            lines.append(h["chunk_text"].strip())
+        return "\n".join(lines)
+
+    # ── Internal helpers ──────────────────────────────────────────────
+
+    def _ensure_table(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS notes_chunks (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        filepath   TEXT NOT NULL,
+                        chunk_text TEXT NOT NULL,
+                        symbol     TEXT,
+                        embedding  BLOB NOT NULL,
+                        indexed_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notes_chunks_filepath
+                        ON notes_chunks(filepath);
+                """)
+        except Exception:
+            pass
+
+    def _is_indexed(self, filepath: str) -> bool:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM notes_chunks WHERE filepath = ? LIMIT 1",
+                    (filepath,),
+                ).fetchone()
+                return row is not None
+        except Exception:
+            return False
+
+    def _chunk_note(self, text: str, note_path: Path) -> List[tuple]:
+        """
+        Paragraph-chunk a note file.  Each tuple is (chunk_text, symbol)
+        where symbol is the most recent markdown heading (if any).
+
+        Falls back to fixed-size chunking for non-markdown files.
+        """
+        chunks: List[tuple] = []
+        current_heading = ""
+        current_para: List[str] = []
+
+        def _flush():
+            body = "\n".join(current_para).strip()
+            if body:
+                header = f"# Note: {note_path.name}"
+                if current_heading:
+                    header += f" — {current_heading}"
+                chunks.append((header + "\n" + body, current_heading or note_path.stem))
+
+        for line in text.splitlines():
+            if line.startswith("#"):
+                _flush()
+                current_para = [line]
+                current_heading = line.lstrip("#").strip()
+            elif line.strip() == "":
+                if current_para:
+                    _flush()
+                    current_para = []
+            else:
+                current_para.append(line)
+                # Flush if chunk is getting large
+                if sum(len(l) for l in current_para) > CHUNK_SIZE:
+                    _flush()
+                    current_para = []
+
+        _flush()
+        return chunks
+
+    def _index_note(self, filepath: str, chunks: List[tuple]):
+        """Delete stale entries then embed and store all chunks."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM notes_chunks WHERE filepath = ?", (filepath,))
+        except Exception:
+            pass
+
+        now = datetime.now().isoformat()
+        for chunk_text, symbol in chunks:
+            vec = self._embed(chunk_text)
+            if vec is None:
+                continue
+            blob = json.dumps(vec).encode("utf-8")
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        """INSERT INTO notes_chunks
+                               (filepath, chunk_text, symbol, embedding, indexed_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (filepath, chunk_text, symbol, blob, now),
+                    )
+            except Exception:
+                pass
+
+    def _embed(self, text: str) -> Optional[List[float]]:
+        """Delegate to the module-level ProjectIndexer embed logic."""
+        import urllib.request
+        try:
+            payload = json.dumps({
+                "model": EMBED_MODEL,
+                "input": text[:2000],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                EMBED_URL,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            embeddings = data.get("embeddings", [])
+            if embeddings and isinstance(embeddings[0], list):
+                return embeddings[0]
+            embedding = data.get("embedding")
+            if embedding and isinstance(embedding, list):
+                return embedding
+        except Exception:
+            pass
+        return None
+
+
+def search_notes(query: str, top_k: int = 3) -> List[Dict]:
+    """
+    Module-level convenience wrapper.  Returns top_k note chunks relevant
+    to *query*, or [] if the notes dir is empty / Ollama is unavailable.
+    """
+    return NoteIndexer().search_notes(query, top_k=top_k)
+
+
 # ── CLI (standalone use) ──────────────────────────────────────────────
 
 def _fmt_path(p: str) -> str:
