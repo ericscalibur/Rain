@@ -836,24 +836,17 @@ class MultiAgentOrchestrator:
         context = ""
 
         # ── Tier 1: Long-term memory (session summaries) ──────────────
-        # Phase 11: relevance-gate summaries so irrelevant session history
-        # doesn't bloat context. Most recent summary always included (recency
-        # anchor); older ones require keyword overlap with the current query.
-        sessions = self.memory.get_recent_sessions(limit=10)
+        # Retrieve sessions by semantic similarity to the current query so only
+        # topically relevant history is injected (RAG Phase 3).  Falls back to
+        # recency order when Ollama is unavailable.
+        sessions = self.memory.get_relevant_sessions(query, top_k=3)
         summaries = [s for s in sessions if s.get("summary")]
         if summaries:
-            if query:
-                relevant = [summaries[0]]  # always keep most recent
-                for s in summaries[1:]:
-                    if self._relevance_score(s["summary"], query) > 0.08:
-                        relevant.append(s)
-                summaries = relevant[:5]
-            else:
-                summaries = summaries[:5]
             context += "\n\nLong-term memory (previous sessions):\n"
             for s in summaries:
                 date = datetime.fromisoformat(s["started_at"]).strftime("%b %d")
-                context += f"  [{date}] {s['summary']}\n"
+                sim_tag = f" · {round(s['session_similarity']*100)}% match" if s.get("session_similarity") else ""
+                context += f"  [{date}{sim_tag}] {s['summary']}\n"
 
         # ── Tier 2: Working memory (current session only) ─────────────
         # Scoped to the current session so cross-session messages don't
@@ -962,6 +955,17 @@ class MultiAgentOrchestrator:
             kg_ctx = self._query_kg_context(query)
             if kg_ctx:
                 context += kg_ctx
+
+        # ── Notes corpus (Phase 4 RAG) ─────────────────────────────────
+        # Search ~/.rain/notes/ for relevant personal notes and inject them.
+        if query:
+            try:
+                from indexer import NoteIndexer
+                note_ctx = NoteIndexer().build_context_block(query, top_k=3)
+                if note_ctx:
+                    context += "\n\n" + note_ctx
+            except Exception:
+                pass
 
         return context
 

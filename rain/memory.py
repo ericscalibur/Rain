@@ -170,6 +170,12 @@ class RainMemory:
                 except Exception:
                     pass
 
+            # ── Migrate sessions table (add summary_embedding if absent) ──
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN summary_embedding BLOB")
+            except Exception:
+                pass  # column already exists
+
             # ── Create synthesis_log table (dual-response logging — Priority 2) ──
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS synthesis_log (
@@ -1143,6 +1149,98 @@ class RainMemory:
                 (self.session_id, limit)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_relevant_sessions(self, query: str, top_k: int = 3) -> List[Dict]:
+        """
+        Return up to top_k past sessions whose summaries are most semantically
+        similar to *query*.  Falls back to recency order when embeddings are
+        unavailable (Ollama down, first run, etc.).
+
+        Lazy-embeds summaries that don't have a stored embedding yet and caches
+        them in the sessions.summary_embedding column so the cost is paid once.
+        """
+        query_vec = self._embed(query) if query else None
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT s.id, s.started_at, s.ended_at, s.summary, s.model,
+                          s.summary_embedding,
+                          COUNT(m.id) as message_count
+                   FROM sessions s
+                   LEFT JOIN messages m ON s.id = m.session_id
+                   WHERE s.id != ? AND s.ended_at IS NOT NULL AND s.summary IS NOT NULL
+                   GROUP BY s.id
+                   HAVING message_count > 0
+                   ORDER BY s.started_at DESC""",
+                (self.session_id,),
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        sessions = [dict(r) for r in rows]
+
+        # No query vec → fall back to most-recent order
+        if query_vec is None:
+            for s in sessions:
+                s.pop("summary_embedding", None)
+            return sessions[:top_k]
+
+        q = np.array(query_vec, dtype=np.float32)
+
+        # Resolve embeddings — use cached or generate fresh
+        vecs = []
+        to_cache: list[tuple[str, bytes]] = []  # (session_id, blob)
+        for s in sessions:
+            blob = s.get("summary_embedding")
+            if blob:
+                try:
+                    vec = np.array(json.loads(blob.decode("utf-8")), dtype=np.float32)
+                    vecs.append(vec)
+                    continue
+                except Exception:
+                    pass
+            # Generate and schedule for caching
+            fresh = self._embed(s["summary"][:1000])
+            if fresh:
+                vec = np.array(fresh, dtype=np.float32)
+                vecs.append(vec)
+                to_cache.append((s["id"], json.dumps(fresh).encode("utf-8")))
+            else:
+                vecs.append(None)
+
+        # Persist newly generated embeddings
+        if to_cache:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.executemany(
+                        "UPDATE sessions SET summary_embedding = ? WHERE id = ?",
+                        [(blob, sid) for sid, blob in to_cache],
+                    )
+            except Exception:
+                pass
+
+        # Batch cosine similarity
+        valid = [(s, v) for s, v in zip(sessions, vecs) if v is not None]
+        if not valid:
+            for s in sessions:
+                s.pop("summary_embedding", None)
+            return sessions[:top_k]
+
+        valid_sessions, valid_vecs = zip(*valid)
+        matrix = np.array(valid_vecs, dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q) + 1e-10
+        sims = (matrix @ q / norms).tolist()
+
+        ranked = sorted(zip(sims, valid_sessions), key=lambda x: x[0], reverse=True)
+        result = []
+        for sim, s in ranked[:top_k]:
+            s = dict(s)
+            s.pop("summary_embedding", None)
+            s["session_similarity"] = round(sim, 3)
+            result.append(s)
+        return result
 
     def get_recent_messages(self, limit: int = 20) -> List[Dict]:
         """Get recent messages including the current session for working memory.
