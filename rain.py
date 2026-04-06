@@ -569,6 +569,49 @@ def _inject_project_context(query: str, project_path: str) -> str:
         return query
 
 
+def _route_query(query: str) -> list:
+    """Determine which retrieval sources to search based on query intent."""
+    q = query.lower()
+    sources = []
+    code_words = ['def ', 'class ', 'function', 'code', 'error', 'bug', 'import', 'syntax', 'method', 'module', 'script']
+    recall_words = ['remember', 'last time', 'yesterday', 'before', 'earlier', 'we discussed', 'you said', 'previously']
+    note_words = ['note', 'wrote', 'my notes', 'i said', 'todo', 'task', 'remind', 'list']
+    if any(w in q for w in code_words):
+        sources.append('project')
+    if any(w in q for w in recall_words):
+        sources.append('memory')
+    if any(w in q for w in note_words):
+        sources.append('notes')
+    if not sources:
+        sources = ['memory', 'notes']  # default: personal context
+    return sources
+
+
+def _enforce_token_budget(context_blocks: list, max_tokens: int = 6000) -> list:
+    """
+    Trim context blocks to fit within token budget.
+    context_blocks: list of (priority: int, text: str) tuples, higher priority = kept first.
+    Returns list of text strings that fit within budget.
+    """
+    # Sort by priority descending
+    sorted_blocks = sorted(context_blocks, key=lambda x: x[0], reverse=True)
+    kept, total = [], 0
+    for priority, text in sorted_blocks:
+        est_tokens = len(text) // 4
+        if total + est_tokens <= max_tokens:
+            kept.append(text)
+            total += est_tokens
+        else:
+            # Try to fit a truncated version
+            remaining = (max_tokens - total) * 4
+            if remaining > 200:
+                kept.append(text[:remaining] + '\n[truncated]')
+            break
+    if total > 0:
+        print(f"📊 Context budget: ~{total} tokens used of {max_tokens} limit")
+    return kept
+
+
 # ── Main CLI ──────────────────────────────────────────────────────────
 
 def main():
@@ -856,8 +899,20 @@ def main():
                         print(_todo_resp)
                         continue
 
-                    augmented_query = _inject_file_context(query)
-                    augmented_query = _inject_project_context(augmented_query, args.project) if args.project else augmented_query
+                    sources = _route_query(query)
+                    ctx_blocks: list[tuple[int, str]] = []
+
+                    file_aug = _inject_file_context(query)
+                    if file_aug != query:
+                        ctx_blocks.append((2, file_aug[:file_aug.rfind('\n\n---\n\n')]))
+
+                    if args.project and 'project' in sources:
+                        proj_aug = _inject_project_context(query, args.project)
+                        if proj_aug != query:
+                            ctx_blocks.append((3, proj_aug[:proj_aug.rfind('\n\n---\n\n')]))
+
+                    kept = _enforce_token_budget(ctx_blocks)
+                    augmented_query = ('\n\n'.join(kept) + '\n\n---\n\n' + query) if kept else query
                     result = rain.recursive_reflect(augmented_query, verbose=args.verbose)
                     if result:
                         print(f"\n\U0001f31f Final Answer (confidence: {result.confidence:.2f}, "
@@ -964,9 +1019,27 @@ def main():
                         )
                     else:
                         print("\U0001f310 No results found \u2014 using local knowledge")
-                query = _inject_file_context(query)
-                if args.project:
-                    query = _inject_project_context(query, args.project)
+                sources = _route_query(args.query)
+                ctx_blocks: list[tuple[int, str]] = []
+
+                # Web search context (priority 0) — already baked into query if web search ran
+                if args.web_search and '\n\n---\n\n' in query:
+                    web_ctx = query[:query.rfind('\n\n---\n\n')]
+                    ctx_blocks.append((0, web_ctx))
+                    query = args.query  # reset; budget enforcement will reassemble with question
+
+                file_aug = _inject_file_context(args.query)
+                if file_aug != args.query:
+                    ctx_blocks.append((2, file_aug[:file_aug.rfind('\n\n---\n\n')]))
+
+                if args.project and 'project' in sources:
+                    proj_aug = _inject_project_context(args.query, args.project)
+                    if proj_aug != args.query:
+                        ctx_blocks.append((3, proj_aug[:proj_aug.rfind('\n\n---\n\n')]))
+
+                kept = _enforce_token_budget(ctx_blocks)
+                if kept:
+                    query = '\n\n'.join(kept) + '\n\n---\n\n' + query
 
                 # Auto-detect react vs reflect
                 _mode = (
