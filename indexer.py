@@ -31,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
+
 
 # ── Constants ─────────────────────────────────────────────────────────
 
@@ -294,26 +296,39 @@ class ProjectIndexer:
             return []
 
         root = Path(project_path)
-        scored = []
+        parsed = []
+        vecs = []
         for row in rows:
             try:
                 vec = json.loads(row["embedding"].decode("utf-8"))
-                sim = _cosine_similarity(query_vec, vec)
-                if sim >= MIN_SIMILARITY:
-                    abs_path = row["file_path"]
-                    try:
-                        rel = str(Path(abs_path).relative_to(root))
-                    except ValueError:
-                        rel = abs_path
-                    scored.append({
-                        "file_path":   abs_path,
-                        "rel_path":    rel,
-                        "chunk_index": row["chunk_index"],
-                        "content":     row["content"],
-                        "similarity":  round(sim, 3),
-                    })
+                parsed.append(row)
+                vecs.append(vec)
             except Exception:
                 continue
+
+        if not parsed:
+            return []
+
+        matrix = np.array(vecs, dtype=np.float32)
+        q = np.array(query_vec, dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q) + 1e-10
+        sims = (matrix @ q / norms).tolist()
+
+        scored = []
+        for sim, row in zip(sims, parsed):
+            if sim >= MIN_SIMILARITY:
+                abs_path = row["file_path"]
+                try:
+                    rel = str(Path(abs_path).relative_to(root))
+                except ValueError:
+                    rel = abs_path
+                scored.append({
+                    "file_path":   abs_path,
+                    "rel_path":    rel,
+                    "chunk_index": row["chunk_index"],
+                    "content":     row["content"],
+                    "similarity":  round(sim, 3),
+                })
 
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         return scored[:top_k]
@@ -686,17 +701,15 @@ class ProjectIndexer:
         return None
 
 
-# ── Pure-Python cosine similarity (no numpy) ──────────────────────────
+# ── Numpy cosine similarity ────────────────────────────────────────────
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot   = sum(x * y for x, y in zip(a, b))
-    mag_a = sum(x * x for x in a) ** 0.5
-    mag_b = sum(x * x for x in b) ** 0.5
-    if mag_a == 0.0 or mag_b == 0.0:
-        return 0.0
-    return dot / (mag_a * mag_b)
+    av = np.array(a, dtype=np.float32)
+    bv = np.array(b, dtype=np.float32)
+    denom = np.linalg.norm(av) * np.linalg.norm(bv)
+    return float(np.dot(av, bv) / denom) if denom > 1e-10 else 0.0
 
 
 # ── CLI (standalone use) ──────────────────────────────────────────────
