@@ -24,6 +24,7 @@ Usage (from Rain):
     results = idx.search_project("how does authentication work?", "/path/to/project")
 """
 
+import ast as _ast
 import json
 import sqlite3
 import sys
@@ -158,6 +159,71 @@ TEXT_EXTENSIONS = frozenset({
 })
 
 
+# ── Semantic-boundary chunking ────────────────────────────────────────
+
+def _chunk_content(content: str, filepath: str, min_size: int = 200, max_size: int = 1500) -> list:
+    """Split content at semantic boundaries. Returns list of dicts: {text, symbol, line}"""
+    import re as _re
+    ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
+
+    if ext == 'py':
+        try:
+            tree = _ast.parse(content)
+            lines = content.splitlines(keepends=True)
+            boundaries = sorted({
+                node.lineno - 1
+                for node in _ast.walk(tree)
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef))
+            })
+            boundaries = [0] + boundaries + [len(lines)]
+            chunks = []
+            for i in range(len(boundaries) - 1):
+                text = ''.join(lines[boundaries[i]:boundaries[i+1]]).strip()
+                if len(text) < min_size:
+                    continue
+                name = ''
+                for node in _ast.walk(tree):
+                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                        if node.lineno - 1 == boundaries[i]:
+                            name = node.name
+                            break
+                chunks.append({'text': text[:max_size], 'symbol': name, 'line': boundaries[i] + 1})
+            return chunks if chunks else _chunk_by_paragraphs(content, min_size, max_size)
+        except SyntaxError:
+            return _chunk_by_paragraphs(content, min_size, max_size)
+
+    elif ext == 'md':
+        sections = _re.split(r'(?=\n#{1,3} )', '\n' + content)
+        chunks = []
+        for section in sections:
+            text = section.strip()
+            if len(text) < min_size:
+                continue
+            m = _re.match(r'#{1,3} (.+)', text)
+            chunks.append({'text': text[:max_size], 'symbol': m.group(1) if m else '', 'line': 0})
+        return chunks if chunks else _chunk_by_paragraphs(content, min_size, max_size)
+
+    else:
+        return _chunk_by_paragraphs(content, min_size, max_size)
+
+
+def _chunk_by_paragraphs(content: str, min_size: int = 200, max_size: int = 1500) -> list:
+    chunks, current = [], ''
+    for para in content.split('\n\n'):
+        para = para.strip()
+        if not para:
+            continue
+        if len(current) + len(para) < max_size:
+            current += ('\n\n' if current else '') + para
+        else:
+            if len(current) >= min_size:
+                chunks.append({'text': current, 'symbol': '', 'line': 0})
+            current = para
+    if len(current) >= min_size:
+        chunks.append({'text': current, 'symbol': '', 'line': 0})
+    return chunks
+
+
 # ── ProjectIndexer ────────────────────────────────────────────────────
 
 class ProjectIndexer:
@@ -287,7 +353,8 @@ class ProjectIndexer:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    """SELECT file_path, chunk_index, content, embedding
+                    """SELECT file_path, chunk_index, content, embedding,
+                              symbol, line
                        FROM project_index
                        WHERE project_path = ?""",
                     (project_path,),
@@ -526,11 +593,22 @@ class ProjectIndexer:
                         chunk_index   INTEGER NOT NULL,
                         content       TEXT    NOT NULL,
                         embedding     BLOB    NOT NULL,
-                        indexed_at    TEXT    NOT NULL
+                        indexed_at    TEXT    NOT NULL,
+                        symbol        TEXT    DEFAULT '',
+                        line          INTEGER DEFAULT 0
                     );
                     CREATE INDEX IF NOT EXISTS idx_project_index_path
                         ON project_index(project_path);
                 """)
+                # Add new columns to existing DBs that predate this schema
+                for col_ddl in [
+                    "ALTER TABLE project_index ADD COLUMN symbol TEXT DEFAULT ''",
+                    "ALTER TABLE project_index ADD COLUMN line   INTEGER DEFAULT 0",
+                ]:
+                    try:
+                        conn.execute(col_ddl)
+                    except Exception:
+                        pass  # Column already exists
         except Exception:
             pass
 
@@ -581,46 +659,21 @@ class ProjectIndexer:
         except Exception:
             return ""
 
-    def _chunk(self, text: str, file_path: Path) -> List[str]:
+    def _chunk(self, text: str, file_path: Path) -> List[dict]:
         """
-        Split text into overlapping chunks of ~CHUNK_SIZE characters.
+        Split text at semantic boundaries (Python AST, Markdown headings,
+        paragraph fallback). Returns list of dicts: {text, symbol, line}.
 
-        Tries to split at newlines to preserve logical boundaries.
-        Prepends a short file header to each chunk so the model knows
+        A file header is prepended to each chunk's text so the model knows
         which file the context came from.
         """
         text = text.strip()
         if not text:
             return []
-
         header = f"# File: {file_path.name}\n"
-
-        # If the whole file fits in one chunk, return it as-is
-        if len(header) + len(text) <= CHUNK_SIZE:
-            return [header + text]
-
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + CHUNK_SIZE - len(header)
-            raw_chunk = text[start:end]
-
-            # Try to end at a newline to avoid splitting mid-line
-            if end < len(text):
-                last_nl = raw_chunk.rfind("\n")
-                if last_nl > CHUNK_SIZE // 2:
-                    raw_chunk = raw_chunk[:last_nl]
-
-            chunk = (header + raw_chunk).strip()
-            if chunk and chunk != header.strip():
-                chunks.append(chunk)
-
-            # Advance, leaving overlap from the end of this chunk
-            advance = len(raw_chunk) - CHUNK_OVERLAP
-            if advance <= 0:
-                advance = max(1, len(raw_chunk))
-            start += advance
-
+        chunks = _chunk_content(text, str(file_path))
+        for chunk in chunks:
+            chunk['text'] = header + chunk['text']
         return chunks
 
     def _is_indexed(self, project_path: str, file_path: str) -> bool:
@@ -637,7 +690,7 @@ class ProjectIndexer:
         except Exception:
             return False
 
-    def _index_file(self, project_path: str, file_path: str, chunks: List[str]):
+    def _index_file(self, project_path: str, file_path: str, chunks: List[dict]):
         """Embed each chunk and store it in the DB, replacing any existing entries."""
         # Remove stale entries for this file first
         try:
@@ -651,7 +704,8 @@ class ProjectIndexer:
 
         now = datetime.now().isoformat()
         for i, chunk in enumerate(chunks):
-            vec = self._embed(chunk)
+            chunk_text = chunk['text']
+            vec = self._embed(chunk_text)
             if vec is None:
                 continue
             blob = json.dumps(vec).encode("utf-8")
@@ -659,9 +713,11 @@ class ProjectIndexer:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute(
                         """INSERT INTO project_index
-                               (project_path, file_path, chunk_index, content, embedding, indexed_at)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (project_path, file_path, i, chunk, blob, now),
+                               (project_path, file_path, chunk_index, content, embedding, indexed_at,
+                                symbol, line)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (project_path, file_path, i, chunk_text, blob, now,
+                         chunk.get('symbol', ''), chunk.get('line', 0)),
                     )
             except Exception:
                 pass
