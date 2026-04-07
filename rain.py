@@ -387,90 +387,54 @@ def _cli_duckduckgo_search(query: str, max_results: int = 5) -> list:
 
 
 def _handle_todo_mutation(query: str):
-    """
-    Returns (handled: bool, response: str).
-    If query is a to-do add/remove/complete, mutates Erics-to-do.md and returns
-    True + the updated list. Otherwise returns False, "".
-    Short-circuits the LLM entirely — no hallucination possible.
-    """
     import os as _os, re as _re, difflib as _difflib
-
     q = query.lower().strip()
-
-    is_remove = bool(_re.search(r'\b(remove|delete|cross.?off|done with)\b', q))
-    is_complete = bool(_re.search(r'\b(complete[d]?|finish(?:ed)?|check.?off|mark.*done)\b', q))
-    is_add = bool(_re.search(r'\b(add|new item|put)\b', q) and _re.search(r'\bto[- ]?do\b', q))
-
-    if not (is_remove or is_complete or is_add):
+    is_remove = bool(_re.search(r'\b(remove|delete|cross.?off|done with|completed?|finished?|check.?off|mark.*done)\b', q))
+    is_add = bool(_re.search(r'\badd\b', q) and _re.search(r'\bto[- ]?do\b', q))
+    if not (is_remove or is_add):
         return False, ""
-
-    # Find the file — same git-root walk as _inject_file_context
-    script_dir = _os.path.dirname(_os.path.abspath(__file__))
-    repo_root = script_dir
-    for _ in range(5):
-        if _os.path.isdir(_os.path.join(repo_root, ".git")):
+    root = _os.path.dirname(_os.path.abspath(__file__))
+    for _ in range(6):
+        if _os.path.exists(_os.path.join(root, '.git')):
             break
-        parent = _os.path.dirname(repo_root)
-        if parent == repo_root:
-            break
-        repo_root = parent
-
-    todo_path = _os.path.join(repo_root, "Erics-to-do.md")
-    if not _os.path.isfile(todo_path):
+        root = _os.path.dirname(root)
+    todo_path = _os.path.join(root, 'Erics-to-do.md')
+    if not _os.path.exists(todo_path):
         return False, ""
-
-    with open(todo_path, "r", encoding="utf-8") as f:
+    with open(todo_path, 'r') as f:
         lines = f.readlines()
-
     if is_add:
-        m = _re.search(r'\badd\s+(.+?)\s+to\b', query, _re.IGNORECASE)
+        m = _re.search(r'\badd\s+(.+?)\s+to\b', q, _re.IGNORECASE)
         if m:
-            item = m.group(1).strip()
-            lines.append(f"- [ ] {item.capitalize()}\n")
-            with open(todo_path, "w", encoding="utf-8") as f:
+            item = m.group(1).strip().capitalize()
+            num = sum(1 for l in lines if _re.match(r'^\d+\.', l.strip())) + 1
+            lines.append(f'{num}. {item}\n')
+            with open(todo_path, 'w') as f:
                 f.writelines(lines)
-            action_desc = f"Added \"{item.capitalize()}\" to your to-do list."
-        else:
-            return False, ""
     else:
-        # Find best matching item line (fuzzy)
-        item_lines = [l for l in lines if l.strip().startswith("- [")]
-        item_texts = [_re.sub(r"^- \[.\] ", "", l).strip() for l in item_lines]
-
-        # Strip intent words to isolate the item description
-        q_clean = _re.sub(
-            r'\b(remove|delete|cross off|done with|complete[d]?|finish(?:ed)?|check off|mark(?:\s+as)?\s+done|from|off|my|the|to[\s-]?do|list)\b',
-            " ", q, flags=_re.IGNORECASE
-        )
-        q_clean = _re.sub(r'\s+', ' ', q_clean).strip()
-
-        matches = _difflib.get_close_matches(q_clean, item_texts, n=1, cutoff=0.3)
+        item_lines = [l for l in lines if _re.match(r'^\d+\.\s+', l.strip())]
+        item_texts = [_re.sub(r'^\d+\.\s+', '', l).strip() for l in item_lines]
+        q_clean = _re.sub(r'\b(remove|delete|complete[d]?|finish|done|mark|check|off|from|my|the|to.?do|list|it)\b', '', q, flags=_re.IGNORECASE).strip()
+        matches = _difflib.get_close_matches(q_clean, item_texts, n=1, cutoff=0.25)
         if not matches:
-            # Fallback: substring match on significant words
-            words = [w for w in q_clean.split() if len(w) > 3]
-            matches = [t for t in item_texts if any(w in t.lower() for w in words)]
+            matches = [t for t in item_texts if any(w in t.lower() for w in q_clean.split() if len(w) > 3)]
             matches = matches[:1]
-
-        if not matches:
-            return False, ""
-
-        matched = matches[0]
-        new_lines = []
-        for l in lines:
-            if matched in l:
-                if is_complete:
-                    new_lines.append(l.replace("- [ ]", "- [x]", 1))
-                # is_remove: skip the line entirely
-            else:
-                new_lines.append(l)
-
-        with open(todo_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-        lines = new_lines
-        action_desc = f"{'Completed' if is_complete else 'Removed'} \"{matched}\" from your to-do list."
-
-    updated = "".join(lines).strip()
-    return True, f"✅ {action_desc}\n\nUpdated to-do list:\n\n{updated}"
+        if matches:
+            matched = matches[0]
+            new_lines = [l for l in lines if matched not in l]
+            n = 1
+            renumbered = []
+            for l in new_lines:
+                if _re.match(r'^\d+\.\s+', l.strip()):
+                    renumbered.append(_re.sub(r'^\d+\.', f'{n}.', l.strip()) + '\n')
+                    n += 1
+                else:
+                    renumbered.append(l)
+            with open(todo_path, 'w') as f:
+                f.writelines(renumbered)
+            lines = renumbered
+    updated = ''.join(lines).strip()
+    return True, f"Updated your to-do list:\n\n{updated}"
 
 
 def _inject_file_context(query: str) -> str:

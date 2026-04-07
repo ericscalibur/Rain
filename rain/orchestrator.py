@@ -1025,7 +1025,7 @@ class MultiAgentOrchestrator:
         except Exception:
             return ""
 
-    def _build_runtime_context(self, agent: Agent) -> str:
+    def _build_runtime_context(self, agent: Agent, query: str = "") -> str:
         """Inject factual self-knowledge into every agent's system prompt.
 
         Without this, agents have no grounded facts about their own model name
@@ -1043,13 +1043,25 @@ class MultiAgentOrchestrator:
                 roster_lines.append(f"  {label}: {m}{marker}")
             roster = "\n".join(roster_lines)
 
-            # Phase 11: prepend RAIN.md self-knowledge if loaded.
-            # EXCLUDED for REFLECTION and SYNTHESIZER — they critique/rewrite the
-            # primary response and don't need Rain's full self-knowledge. Injecting
-            # 12K chars of RAIN.md into a 4-8K context window crowds out the actual
-            # response being reviewed and causes HTTP 500 context overflow errors.
+            # Inject RAIN.md self-knowledge only for self-referential queries.
+            # Injecting 14KB into every prompt crowds out the actual question,
+            # bleeds roadmap/phase content into unrelated responses, and wastes
+            # context window on queries that have nothing to do with Rain itself.
+            _SELF_REF_PATTERNS = [
+                'do you think you', 'do you think rain', 'are you valuable',
+                'are you useful', 'compare yourself', 'compare rain to',
+                'rain compared to', 'rain vs ', 'tell me about yourself',
+                'describe yourself', 'what can you do', 'how do you compare',
+                'you vs ', 'you compared to', 'what are you', 'who are you',
+                'your capabilities', 'your phases', 'your architecture',
+                'your pipeline', 'your agents', 'your models', 'your roadmap',
+                'your memory', 'your tools', 'your skills',
+            ]
+            _q_lower = query.lower()
+            _is_self_ref = any(p in _q_lower for p in _SELF_REF_PATTERNS)
             rain_md_block = ""
-            if self.rain_md and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER):
+            if (self.rain_md and _is_self_ref
+                    and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER)):
                 rain_md_block = f"{self.rain_md}\n\n---\n\n"
 
             sandbox_line = (
@@ -1370,7 +1382,7 @@ class MultiAgentOrchestrator:
             if include_memory and agent.agent_type not in (AgentType.REFLECTION, AgentType.SYNTHESIZER):
                 skill_context = self._build_skill_context(prompt)
 
-            runtime_context = self._build_runtime_context(agent)
+            runtime_context = self._build_runtime_context(agent, query=prompt)
             system_content = runtime_context + agent.system_prompt + memory_context + skill_context + vision_system_addendum
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
@@ -1998,7 +2010,7 @@ class MultiAgentOrchestrator:
         # persistent memory context (facts, corrections) into system prompt.
         # Previously the ReAct loop skipped _build_runtime_context entirely,
         # leaving Rain with no grounded self-knowledge in agentic mode.
-        runtime_context = self._build_runtime_context(agent)
+        runtime_context = self._build_runtime_context(agent, query=goal)
         memory_context  = self._build_memory_context(query=goal)
         system_prompt   = REACT_SYSTEM_PROMPT
         if runtime_context:
