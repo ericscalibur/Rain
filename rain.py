@@ -414,7 +414,7 @@ def _handle_todo_mutation(query: str):
     else:
         item_lines = [l for l in lines if _re.match(r'^\d+\.\s+', l.strip())]
         item_texts = [_re.sub(r'^\d+\.\s+', '', l).strip() for l in item_lines]
-        q_clean = _re.sub(r'\b(remove|delete|complete[d]?|finish|done|mark|check|off|from|my|the|to.?do|list|it)\b', '', q, flags=_re.IGNORECASE).strip()
+        q_clean = _re.sub(r'\b(remove|delete|completed?|finish|done|mark|check|off|from|my|the|to.?do|list|it)\b', '', q, flags=_re.IGNORECASE).strip()
         matches = _difflib.get_close_matches(q_clean, item_texts, n=1, cutoff=0.25)
         if not matches:
             matches = [t for t in item_texts if any(w in t.lower() for w in q_clean.split() if len(w) > 3)]
