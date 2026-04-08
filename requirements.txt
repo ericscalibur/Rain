@@ -13,3 +13,9 @@ faster-whisper>=1.0.0
 
 # ── Phase 8: Voice (TTS) — future ────────────────────────
 # piper-tts                 # uncomment when Phase 8 TTS is implemented
+
+# ── MemPalace — ChromaDB-backed semantic memory (Tier 3b) ─
+# Spatial palace architecture: Wings → Rooms → Drawers.
+# Provides 96.6% R@5 retrieval with metadata filtering.
+# Brings chromadb as a transitive dependency.
+mempalace>=3.0.0

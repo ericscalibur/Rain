@@ -42,6 +42,13 @@ try:
 except ImportError:
     _TOOLS_AVAILABLE = False
 
+# ── MemPalace integration (optional) ────────────────────────────────────────
+try:
+    from .mem_palace import MemPalaceAdapter
+    _MP_AVAILABLE = True
+except ImportError:
+    _MP_AVAILABLE = False
+
 
 def _ts() -> str:
     """Return a compact HH:MM:SS timestamp string for progress output."""
@@ -331,6 +338,22 @@ class MultiAgentOrchestrator:
                 self.tools = ToolRegistry(confirm_fn=None)  # set by caller for interactive use
             except Exception:
                 self.tools = None
+
+        # MemPalace — ChromaDB-backed semantic store (Tier 3b).
+        # Gracefully disabled if mempalace is not installed.
+        self.mem_palace: Optional['MemPalaceAdapter'] = None
+        if _MP_AVAILABLE:
+            try:
+                self.mem_palace = MemPalaceAdapter()
+                if self.mem_palace.available:
+                    st = self.mem_palace.status()
+                    print(
+                        f"🏛️  MemPalace  {st['palace_path']}  "
+                        f"({st['drawer_count']} drawers)",
+                        flush=True,
+                    )
+            except Exception:
+                self.mem_palace = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -889,6 +912,20 @@ class MultiAgentOrchestrator:
                     stale = f" ⚠️ {days_old}d old — may be outdated" if days_old > 1 else ""
                     snippet = hit["content"][:400] + "..." if len(hit["content"]) > 400 else hit["content"]
                     context += f"  [{date} · {round(hit['similarity'] * 100)}% match{stale}] {role}: {snippet}\n"
+
+        # ── Tier 3b: MemPalace deep semantic memory ────────────────────
+        # ChromaDB-backed retrieval across all past sessions, spatially
+        # organised by agent type (wing="rain", room=agent).  Complements
+        # Tier 3's SQLite vectors with higher-fidelity embedding search and
+        # metadata filtering (+34% retrieval precision over flat search).
+        if query and self.mem_palace and self.mem_palace.available:
+            mp_hits = self.mem_palace.search(query, n_results=5)
+            if mp_hits:
+                context += "\n\nMemPalace (deep cross-session memory):\n"
+                for hit in mp_hits:
+                    snippet = hit["text"][:400] + "..." if len(hit["text"]) > 400 else hit["text"]
+                    pct = round(hit["similarity"] * 100)
+                    context += f"  [{hit['room']} · {pct}% match] {snippet}\n"
 
         # ── Tier 4: Learned corrections (Phase 5B) ─────────────────────
         if query:
@@ -2732,6 +2769,16 @@ class MultiAgentOrchestrator:
                 confidence=final_confidence,
                 agent_type=primary_agent.agent_type.value,
             )
+            # MemPalace — persist Q&A exchange as a verbatim drawer.
+            # Skips synthesis noise (confidence < 0.5 or POOR rating) to keep
+            # the palace populated with Rain's best answers, not its bad ones.
+            if self.mem_palace and self.mem_palace.available:
+                if final_confidence >= 0.5 and not (critique and rating == "POOR"):
+                    self.mem_palace.store_exchange(
+                        query=original_query,
+                        response=final_response,
+                        agent_type=primary_agent.agent_type.value,
+                    )
             # Phase 11: deliberate forgetting — prune session if it's grown large.
             # Runs in a background thread so it never blocks the response.
             # Only fires when session exceeds 40 messages (keep_recent=20, threshold=40).
