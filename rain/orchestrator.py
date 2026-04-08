@@ -1715,29 +1715,31 @@ class MultiAgentOrchestrator:
                 break
 
         if base is None:
-            # Count hedging language — each phrase signals real uncertainty
+            # Count hedging language.  Local models hedge stylistically even
+            # when fully correct — "I think Python uses duck typing" is a
+            # confident claim, not genuine uncertainty.  Cap the penalty at 2
+            # hedges so a conversationally-worded correct answer isn't
+            # penalised more than a factually-wrong terse one.
             hedges = [
                 "i think", "i believe", "probably", "might be", "could be",
                 "may be", "seems like", "appears to", "not entirely sure",
                 "i'm not certain", "it depends", "hard to say", "i'm unsure",
             ]
-            hedge_count = sum(1 for h in hedges if h in lower)
-            # Flat base 0.78 regardless of length — brevity is not uncertainty.
-            # A one-sentence correct answer is not less confident than a 5-paragraph
-            # one. The old length penalty (0.68 for short) was causing synthesis to
-            # fire on perfectly good brief answers, adding 60+ seconds for no gain.
-            base = 0.78
-            base = max(0.45, base - (hedge_count * 0.05))
+            hedge_count = min(2, sum(1 for h in hedges if h in lower))
+            # Flat base 0.82 regardless of length — brevity is not uncertainty.
+            # Previous base was 0.78; at 0.78 – (2 hedges × 0.05) = 0.68, local
+            # models typically scored 53-62%, keeping synthesis veto from firing.
+            # Raised to 0.82 so stylistically-hedged correct answers land at
+            # 0.74+, comfortably above the 0.65 synthesis veto threshold.
+            base = 0.82
+            base = max(0.45, base - (hedge_count * 0.04))
             if '?' in response[-80:]:
-                base = max(0.45, base - 0.08)
-            # No upward keyword boosters. Previous versions had lists of
-            # "reasoning markers" (therefore, thus, step 1, step 2...) that
-            # inflated scores for responses that used conclusion language or
-            # numbered structure regardless of actual reasoning quality.
-            # A shallow response with "Therefore... In conclusion..." scored
-            # identically to a genuinely well-reasoned one. Removed entirely.
-            # The calibration system (per-agent historical accuracy) is the
-            # right mechanism for upward adjustment — not keyword matching.
+                base = max(0.45, base - 0.06)
+            # Code-block boost: a response containing runnable code is almost
+            # always more deterministic than prose — the model is committing to
+            # a specific, verifiable artifact.  +0.05, capped at 0.95.
+            if '```' in response:
+                base = min(0.95, base + 0.05)
 
         # Apply calibration factor if we have enough historical data
         if agent_type and self._calibration_factors:
@@ -2644,8 +2646,8 @@ class MultiAgentOrchestrator:
             # only NEEDS_IMPROVEMENT (not POOR) — high confidence + marginal
             # critique = likely a style nit, not a real error.  POOR always
             # triggers synthesis regardless of confidence.
-            if rating == 'NEEDS_IMPROVEMENT' and primary_confidence >= 0.76:
-                print(f"{_ts()} ⏭  Synthesis vetoed (conf {primary_confidence:.2f} ≥ 0.76, rating NEEDS_IMPROVEMENT)")
+            if rating == 'NEEDS_IMPROVEMENT' and primary_confidence >= 0.65:
+                print(f"{_ts()} ⏭  Synthesis vetoed (conf {primary_confidence:.2f} ≥ 0.65, rating NEEDS_IMPROVEMENT)")
                 rating = 'GOOD'  # treat as good for downstream logging
 
             # Length veto: a long, detailed primary response that gets only
