@@ -392,19 +392,25 @@ def _handle_todo_mutation(query: str):
     If query is a to-do add/remove/complete, mutates Erics-to-do.md and returns
     True + the updated list. Otherwise returns False, "".
     Short-circuits the LLM entirely — no hallucination possible.
+
+    Handles ordinal references ("task number one"), compound requests
+    (complete + add in one message), and "to the list: X" phrasing.
     """
     import os as _os, re as _re, difflib as _difflib
 
     q = query.lower().strip()
 
-    is_remove = bool(_re.search(r'\b(remove|delete|cross.?off|done with)\b', q))
-    is_complete = bool(_re.search(r'\b(complete[d]?|finish(?:ed)?|check.?off|mark.*done)\b', q))
-    is_add = bool(_re.search(r'\b(add|new item|put)\b', q) and _re.search(r'\bto[- ]?do\b', q))
+    is_remove   = bool(_re.search(r'\b(remove|delete|cross.?off|done with)\b', q))
+    is_complete = bool(_re.search(r'\b(complete[d]?|finish(?:ed)?|check.?off|mark.*done|(?:is|are)\s+done)\b', q))
+    # "to the list", "to my list", "new task" all count as add intent
+    is_add = bool(
+        _re.search(r'\b(add|new item|put)\b', q)
+        and _re.search(r'\b(to[- ]?do|to\s+(?:the|my)\s+list|task)\b', q)
+    )
 
     if not (is_remove or is_complete or is_add):
         return False, ""
 
-    # Find the file — same git-root walk as _inject_file_context
     script_dir = _os.path.dirname(_os.path.abspath(__file__))
     repo_root = script_dir
     for _ in range(5):
@@ -422,55 +428,91 @@ def _handle_todo_mutation(query: str):
     with open(todo_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
+    item_lines = [(i, l) for i, l in enumerate(lines) if l.strip().startswith("- [")]
+    item_texts = [_re.sub(r"^- \[.\] ", "", l).strip() for _, l in item_lines]
+
+    _ORDINALS = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        **{str(n): n for n in range(1, 11)},
+    }
+
+    def _resolve_positions(q_text):
+        positions = set()
+        for m in _re.finditer(
+            r'\btask\s+(?:number\s+)?(?:#)?(\d+|\w+)\b'
+            r'|\bnumber\s+(\d+|\w+)\b'
+            r'|\b#(\d+)\b',
+            q_text, _re.IGNORECASE,
+        ):
+            raw = next(g for g in m.groups() if g is not None).lower()
+            if raw in _ORDINALS:
+                positions.add(_ORDINALS[raw])
+        return sorted(positions)
+
+    action_descs = []
+
+    if is_complete or is_remove:
+        positions = _resolve_positions(q)
+        matched = []
+        if positions:
+            for pos in positions:
+                if 1 <= pos <= len(item_texts):
+                    matched.append(item_texts[pos - 1])
+        else:
+            q_clean = _re.sub(
+                r'\b(remove|delete|cross off|done with|completed?|finished?|check off|'
+                r'mark(?:\s+as)?\s+done|from|off|my|the|to[\s-]?do|list|task(?:s)?|number)\b',
+                " ", q, flags=_re.IGNORECASE,
+            )
+            q_clean = _re.sub(r'\s+', ' ', q_clean).strip()
+            fuzzy = _difflib.get_close_matches(q_clean, item_texts, n=3, cutoff=0.3)
+            if not fuzzy:
+                words = [w for w in q_clean.split() if len(w) > 3]
+                fuzzy = [t for t in item_texts if any(w in t.lower() for w in words)][:3]
+            matched = fuzzy
+
+        if matched:
+            new_lines = []
+            for l in lines:
+                hit = next((t for t in matched if t in l), None)
+                if hit:
+                    if is_complete:
+                        new_lines.append(l.replace("- [ ]", "- [x]", 1))
+                        action_descs.append(f"Completed \"{hit}\"")
+                else:
+                    new_lines.append(l)
+            lines = new_lines
+
     if is_add:
-        m = _re.search(r'\badd\s+(.+?)\s+to\b', query, _re.IGNORECASE)
+        item = None
+        m = _re.search(
+            r'(?:to\s+(?:the|my)\s+list|new\s+task|to[\s-]?do)\s*:\s*(.+?)(?:\s*$|\s*\.)',
+            query, _re.IGNORECASE,
+        )
         if m:
             item = m.group(1).strip()
+        if not item:
+            m = _re.search(r'\badd\s+(.+?)\s+to\b', query, _re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                if not _re.match(r'^(?:a\s+)?(?:new\s+)?(?:task|item)$', candidate, _re.IGNORECASE):
+                    item = candidate
+        if item:
+            item = item.rstrip('.,;!')
             lines.append(f"- [ ] {item.capitalize()}\n")
-            with open(todo_path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-            action_desc = f"Added \"{item.capitalize()}\" to your to-do list."
-        else:
-            return False, ""
-    else:
-        # Find best matching item line (fuzzy)
-        item_lines = [l for l in lines if l.strip().startswith("- [")]
-        item_texts = [_re.sub(r"^- \[.\] ", "", l).strip() for l in item_lines]
+            action_descs.append(f"Added \"{item.capitalize()}\"")
 
-        # Strip intent words to isolate the item description
-        q_clean = _re.sub(
-            r'\b(remove|delete|cross off|done with|complete[d]?|finish(?:ed)?|check off|mark(?:\s+as)?\s+done|from|off|my|the|to[\s-]?do|list)\b',
-            " ", q, flags=_re.IGNORECASE
-        )
-        q_clean = _re.sub(r'\s+', ' ', q_clean).strip()
+    if not action_descs:
+        return False, ""
 
-        matches = _difflib.get_close_matches(q_clean, item_texts, n=1, cutoff=0.3)
-        if not matches:
-            # Fallback: substring match on significant words
-            words = [w for w in q_clean.split() if len(w) > 3]
-            matches = [t for t in item_texts if any(w in t.lower() for w in words)]
-            matches = matches[:1]
-
-        if not matches:
-            return False, ""
-
-        matched = matches[0]
-        new_lines = []
-        for l in lines:
-            if matched in l:
-                if is_complete:
-                    new_lines.append(l.replace("- [ ]", "- [x]", 1))
-                # is_remove: skip the line entirely
-            else:
-                new_lines.append(l)
-
-        with open(todo_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-        lines = new_lines
-        action_desc = f"{'Completed' if is_complete else 'Removed'} \"{matched}\" from your to-do list."
+    with open(todo_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
     updated = "".join(lines).strip()
-    return True, f"✅ {action_desc}\n\nUpdated to-do list:\n\n{updated}"
+    summary = " · ".join(action_descs)
+    return True, f"✅ {summary}.\n\nUpdated to-do list:\n\n{updated}"
 
 
 def _inject_file_context(query: str) -> str:
