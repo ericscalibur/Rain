@@ -2301,7 +2301,8 @@ class MultiAgentOrchestrator:
         # 3. Read and inject each file if it exists
         if _files_to_inject and self.tools:
             _injected_blocks = []
-            _search_dirs = [Path('.')]
+            _rain_root_fc = Path(__file__).parent.parent.resolve()
+            _search_dirs = [_rain_root_fc, Path('.')]
             if self.project_path:
                 _search_dirs.insert(0, Path(self.project_path))
             for _fname in _files_to_inject:
