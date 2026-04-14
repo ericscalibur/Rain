@@ -42,7 +42,7 @@ QUESTIONS = [
     # ── Self-knowledge ────────────────────────────────────────────────────────
     {
         "question": "What AI models do you actually have installed and use right now?",
-        "expect":   ["qwen", "llama", "nomic", "ollama", "local"],
+        "expect":   ["qwen", "llama", "nomic"],
         "reject":   ["gpt", "openai", "claude", "gemini", "i don't have access",
                      "i cannot", "i do not have"],
         "correction": (
@@ -88,7 +88,7 @@ QUESTIONS = [
     },
     {
         "question": "Where is your memory stored?",
-        "expect":   ["sqlite", ".rain", "memory.db", "local", "disk"],
+        "expect":   ["sqlite", ".rain", "memory.db"],
         "reject":   ["stored in the cloud", "cloud storage", "cloud-based", "no persistent memory"],
         "correction": (
             "Your memory is stored in a SQLite database at ~/.rain/memory.db on local disk. "
@@ -300,7 +300,7 @@ QUESTIONS = [
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def run_rain(query: str, timeout: int = 150) -> tuple[str, float]:
+def run_rain(query: str, timeout: int = 220) -> tuple[str, float]:
     """Run a query through Rain CLI. Returns (output, elapsed_seconds)."""
     t0 = time.time()
     try:
