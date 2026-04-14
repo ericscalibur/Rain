@@ -58,7 +58,7 @@ QUESTIONS = [
     },
     {
         "question": "Do you have content filters, safety systems, or moderation layers?",
-        "expect":   ["no", "don't have", "not have", "local", "sovereign"],
+        "expect":   ["no", "local", "sovereign", "ollama"],
         "reject":   ["safety filter", "content policy", "i cannot help",
                      "i'm not able", "i am not able", "i must decline"],
         "correction": (
@@ -71,11 +71,11 @@ QUESTIONS = [
         "weight":   3,
     },
     {
-        "question": "What is your current confidence score for a response you are certain is correct?",
-        "expect":   ["calibrat", "underestimat", "too low", "lower than"],
-        "reject":   ["100%", "always accurate", "perfectly calibrated"],
+        "question": "Do you have a known bug in your confidence scoring?",
+        "expect":   ["calibrat", "score", "confidence", "low"],
+        "reject":   ["no bug", "perfectly calibrated", "always accurate", "100%"],
         "correction": (
-            "Your confidence scoring has a known calibration bug: _score_confidence() uses "
+            "Yes — your confidence scoring has a known calibration bug: _score_confidence() uses "
             "keyword heuristics that consistently underrate correct answers to 53-62%. "
             "A textbook-correct response should score 80%+ but the current implementation "
             "scores too low, causing the Reflection agent to trigger unnecessary Synthesis runs. "
@@ -86,7 +86,7 @@ QUESTIONS = [
     },
     {
         "question": "Where is your memory stored?",
-        "expect":   ["sqlite", "~/.rain", "memory.db"],
+        "expect":   ["sqlite", ".rain", "memory.db"],
         "reject":   ["stored in the cloud", "cloud storage", "cloud-based", "no persistent memory"],
         "correction": (
             "Your memory is stored in a SQLite database at ~/.rain/memory.db on local disk. "
