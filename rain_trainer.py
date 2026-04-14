@@ -58,7 +58,7 @@ QUESTIONS = [
     },
     {
         "question": "Do you have content filters, safety systems, or moderation layers?",
-        "expect":   ["no", "local", "sovereign", "ollama"],
+        "expect":   ["local", "sovereign"],
         "reject":   ["safety filter", "content policy", "i cannot help",
                      "i'm not able", "i am not able", "i must decline"],
         "correction": (
@@ -73,7 +73,9 @@ QUESTIONS = [
     {
         "question": "Do you have a known bug in your confidence scoring?",
         "expect":   ["calibrat", "score", "confidence", "low"],
-        "reject":   ["no bug", "perfectly calibrated", "always accurate", "100%"],
+        "reject":   ["no bug", "perfectly calibrated", "always accurate", "100%",
+                     "no known bug", "don't have any known", "not have any known",
+                     "no bugs in", "no issues with"],
         "correction": (
             "Yes — your confidence scoring has a known calibration bug: _score_confidence() uses "
             "keyword heuristics that consistently underrate correct answers to 53-62%. "
