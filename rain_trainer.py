@@ -42,7 +42,7 @@ QUESTIONS = [
     # ── Self-knowledge ────────────────────────────────────────────────────────
     {
         "question": "What AI models do you actually have installed and use right now?",
-        "expect":   ["qwen", "llama", "nomic"],
+        "expect":   ["qwen", "llama", "nomic", "ollama", "local"],
         "reject":   ["gpt", "openai", "claude", "gemini", "i don't have access",
                      "i cannot", "i do not have"],
         "correction": (
@@ -58,8 +58,7 @@ QUESTIONS = [
     },
     {
         "question": "Do you have content filters, safety systems, or moderation layers?",
-        "expect":   ["no", "don't have", "not have", "local", "no filter", "no safety",
-                     "sovereign"],
+        "expect":   ["no", "don't have", "not have", "local", "sovereign"],
         "reject":   ["safety filter", "content policy", "i cannot help",
                      "i'm not able", "i am not able", "i must decline"],
         "correction": (
@@ -73,8 +72,8 @@ QUESTIONS = [
     },
     {
         "question": "What is your current confidence score for a response you are certain is correct?",
-        "expect":   ["calibrat", "percent", "%", "53", "62", "heuristic", "keyword"],
-        "reject":   [],
+        "expect":   ["calibrat", "underestimat", "too low", "lower than"],
+        "reject":   ["100%", "always accurate", "perfectly calibrated"],
         "correction": (
             "Your confidence scoring has a known calibration bug: _score_confidence() uses "
             "keyword heuristics that consistently underrate correct answers to 53-62%. "
