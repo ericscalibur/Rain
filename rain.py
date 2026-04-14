@@ -387,54 +387,195 @@ def _cli_duckduckgo_search(query: str, max_results: int = 5) -> list:
 
 
 def _handle_todo_mutation(query: str):
+    """
+    Returns (handled: bool, response: str).
+    If query is a to-do add/remove/complete, mutates Erics-to-do.md and returns
+    True + the updated list. Otherwise returns False, "".
+    Short-circuits the LLM entirely — no hallucination possible.
+
+    Handles ordinal references ("task number one"), compound requests
+    (complete + add in one message), and "to the list: X" phrasing.
+    """
     import os as _os, re as _re, difflib as _difflib
+
     q = query.lower().strip()
-    is_remove = bool(_re.search(r'\b(remove|delete|cross.?off|done with|completed?|finished?|check.?off|mark.*done)\b', q))
-    is_add = bool(_re.search(r'\badd\b', q) and _re.search(r'\bto[- ]?do\b', q))
-    if not (is_remove or is_add):
-        return False, ""
-    root = _os.path.dirname(_os.path.abspath(__file__))
-    for _ in range(6):
-        if _os.path.exists(_os.path.join(root, '.git')):
+
+    # Locate Erics-to-do.md from the repo root (needed early for path queries)
+    script_dir = _os.path.dirname(_os.path.abspath(__file__))
+    repo_root = script_dir
+    for _ in range(5):
+        if _os.path.isdir(_os.path.join(repo_root, ".git")):
             break
-        root = _os.path.dirname(root)
-    todo_path = _os.path.join(root, 'Erics-to-do.md')
-    if not _os.path.exists(todo_path):
+        parent = _os.path.dirname(repo_root)
+        if parent == repo_root:
+            break
+        repo_root = parent
+    todo_path = _os.path.join(repo_root, "Erics-to-do.md")
+
+    # ── File-path / "save to disk" read queries ─────────────────────────
+    is_path_q = bool(
+        _re.search(r'\b(file\s*path|save.*disk|verify.*file|access.*file|explicit\w*\s+save)\b', q)
+        and _re.search(r'\b(to[\s-]?do|todo|list|it)\b', q)
+    )
+    if is_path_q:
+        if _os.path.isfile(todo_path):
+            with open(todo_path, "r", encoding="utf-8") as f:
+                contents = f.read().strip()
+            return True, f"The to-do list is saved at:\n\n`{todo_path}`\n\nCurrent contents:\n\n{contents}"
+        else:
+            return True, f"The to-do list will be saved at:\n\n`{todo_path}`\n\nThe file does not exist yet — tell me what to put on the list and I'll create it."
+
+    is_remove   = bool(_re.search(r'\b(remove|delete|cross.?off|done with)\b', q))
+    is_complete = bool(_re.search(r'\b(complete[d]?|finish(?:ed)?|check.?off|mark.*done|(?:is|are)\s+done)\b', q))
+    # Detect "remove all except X" / "keep only X" — implies is_remove
+    remove_except_m = _re.search(
+        r'\b(?:remove|delete)\s+(?:all|everything)(?:\s+\w+){0,4}\s+except\s+(?:for\s+)?["\']?(.+?)["\']?\s*(?:[,.]|$)',
+        query, _re.IGNORECASE,
+    ) or _re.search(
+        r'\bkeep\s+only\s+["\']?(.+?)["\']?\s*(?:[,.]|$)',
+        query, _re.IGNORECASE,
+    )
+    if remove_except_m:
+        is_remove = True
+    # "to the list", "to my list", "new task/tasks", "let's add X", or compound remove+add
+    is_add = bool(
+        _re.search(r'\b(add|new item|put)\b', q)
+        and (
+            _re.search(r'\b(to[- ]?do|to\s+(?:the|my)\s+list|tasks?)\b', q)
+            or is_remove or is_complete
+            or _re.search(r"(?:let'?s\s+add|also\s+add|and\s+add|please\s+add)", q)
+        )
+    )
+
+    if not (is_remove or is_complete or is_add):
         return False, ""
-    with open(todo_path, 'r') as f:
-        lines = f.readlines()
-    if is_add:
-        m = _re.search(r'\badd\s+(.+?)\s+to\b', q, _re.IGNORECASE)
-        if m:
-            item = m.group(1).strip().capitalize()
-            num = sum(1 for l in lines if _re.match(r'^\d+\.', l.strip())) + 1
-            lines.append(f'{num}. {item}\n')
-            with open(todo_path, 'w') as f:
-                f.writelines(lines)
+
+    if not _os.path.isfile(todo_path):
+        if is_add and not (is_remove or is_complete):
+            # Create the file so the add can proceed
+            with open(todo_path, "w", encoding="utf-8") as f:
+                f.write("# Eric's To-Do List\n\n")
+            lines: list = ["# Eric's To-Do List\n", "\n"]
+            item_lines: list = []
+            item_texts: list = []
+        else:
+            return False, ""
     else:
-        item_lines = [l for l in lines if _re.match(r'^\d+\.\s+', l.strip())]
-        item_texts = [_re.sub(r'^\d+\.\s+', '', l).strip() for l in item_lines]
-        q_clean = _re.sub(r'\b(remove|delete|completed?|finish|done|mark|check|off|from|my|the|to.?do|list|it)\b', '', q, flags=_re.IGNORECASE).strip()
-        matches = _difflib.get_close_matches(q_clean, item_texts, n=1, cutoff=0.25)
-        if not matches:
-            matches = [t for t in item_texts if any(w in t.lower() for w in q_clean.split() if len(w) > 3)]
-            matches = matches[:1]
-        if matches:
-            matched = matches[0]
-            new_lines = [l for l in lines if matched not in l]
-            n = 1
-            renumbered = []
-            for l in new_lines:
-                if _re.match(r'^\d+\.\s+', l.strip()):
-                    renumbered.append(_re.sub(r'^\d+\.', f'{n}.', l.strip()) + '\n')
-                    n += 1
+        with open(todo_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        item_lines = [(i, l) for i, l in enumerate(lines) if l.strip().startswith("- [")]
+        item_texts = [_re.sub(r"^- \[.\] ", "", l).strip() for _, l in item_lines]
+
+    _ORDINALS = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        **{str(n): n for n in range(1, 11)},
+    }
+
+    def _resolve_positions(q_text):
+        positions = set()
+        for m in _re.finditer(
+            r'\btask\s+(?:number\s+)?(?:#)?(\d+|\w+)\b'
+            r'|\bnumber\s+(\d+|\w+)\b'
+            r'|\b#(\d+)\b',
+            q_text, _re.IGNORECASE,
+        ):
+            raw = next(g for g in m.groups() if g is not None).lower()
+            if raw in _ORDINALS:
+                positions.add(_ORDINALS[raw])
+        return sorted(positions)
+
+    action_descs = []
+
+    # ── "Remove all except X" / "keep only X" ──────────────────────────
+    if remove_except_m and is_remove and not is_complete and item_texts:
+        keep_text = remove_except_m.group(1).strip().strip("'\".,;")
+        keep_lower = keep_text.lower()
+        fuzzy_keep = _difflib.get_close_matches(keep_lower, [t.lower() for t in item_texts], n=1, cutoff=0.3)
+        if fuzzy_keep:
+            kept_item = item_texts[[t.lower() for t in item_texts].index(fuzzy_keep[0])]
+        else:
+            keep_words = [w for w in keep_lower.split() if len(w) > 3]
+            kept_item = next((t for t in item_texts if any(w in t.lower() for w in keep_words)), None)
+        if kept_item:
+            removed_items = [t for t in item_texts if t != kept_item]
+            lines = [l for l in lines if not any(t in l for t in removed_items)]
+            item_texts = [kept_item]
+            if removed_items:
+                action_descs.append(f"Removed {len(removed_items)} task(s), kept \"{kept_item}\"")
+            is_remove = False  # handled; skip normal remove logic
+
+    if is_complete or is_remove:
+        positions = _resolve_positions(q)
+        matched = []
+        if positions:
+            for pos in positions:
+                if 1 <= pos <= len(item_texts):
+                    matched.append(item_texts[pos - 1])
+        else:
+            q_clean = _re.sub(
+                r'\b(remove|delete|cross off|done with|completed?|finished?|check off|'
+                r'mark(?:\s+as)?\s+done|from|off|my|the|to[\s-]?do|list|task(?:s)?|number)\b',
+                " ", q, flags=_re.IGNORECASE,
+            )
+            q_clean = _re.sub(r'\s+', ' ', q_clean).strip()
+            fuzzy = _difflib.get_close_matches(q_clean, item_texts, n=3, cutoff=0.3)
+            if not fuzzy:
+                words = [w for w in q_clean.split() if len(w) > 3]
+                fuzzy = [t for t in item_texts if any(w in t.lower() for w in words)][:3]
+            matched = fuzzy
+
+        if matched:
+            new_lines = []
+            for l in lines:
+                hit = next((t for t in matched if t in l), None)
+                if hit:
+                    if is_complete:
+                        new_lines.append(l.replace("- [ ]", "- [x]", 1))
+                        action_descs.append(f"Completed \"{hit}\"")
                 else:
-                    renumbered.append(l)
-            with open(todo_path, 'w') as f:
-                f.writelines(renumbered)
-            lines = renumbered
-    updated = ''.join(lines).strip()
-    return True, f"Updated your to-do list:\n\n{updated}"
+                    new_lines.append(l)
+            lines = new_lines
+
+    if is_add:
+        item = None
+        m = _re.search(
+            r'(?:to\s+(?:the|my)\s+list|new\s+task|to[\s-]?do)\s*:\s*(.+?)(?:\s*$|\s*\.)',
+            query, _re.IGNORECASE,
+        )
+        if m:
+            item = m.group(1).strip()
+        if not item:
+            m = _re.search(r'\badd\s+(.+?)\s+to\b', query, _re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                if not _re.match(r'^(?:a\s+)?(?:new\s+)?(?:task|item)$', candidate, _re.IGNORECASE):
+                    item = candidate
+        if not item:
+            # "let's add X", "also add X", bare "add 'X'" at end of message
+            m = _re.search(
+                r"(?:let'?s\s+|also\s+|and\s+|please\s+)?add\s+['\"]?(.+?)['\"]?\s*[,.]?\s*$",
+                query, _re.IGNORECASE,
+            )
+            if m:
+                candidate = m.group(1).strip().strip("'\"")
+                if candidate and not _re.match(r'^(?:a\s+)?(?:new\s+)?(?:task|item)$', candidate, _re.IGNORECASE):
+                    item = candidate
+        if item:
+            item = item.rstrip('.,;!')
+            lines.append(f"- [ ] {item.capitalize()}\n")
+            action_descs.append(f"Added \"{item.capitalize()}\"")
+
+    if not action_descs:
+        return False, ""
+
+    with open(todo_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    updated = "".join(lines).strip()
+    summary = " · ".join(action_descs)
+    return True, f"✅ {summary}.\n\nUpdated to-do list:\n\n{updated}"
 
 
 def _inject_file_context(query: str) -> str:
@@ -531,49 +672,6 @@ def _inject_project_context(query: str, project_path: str) -> str:
     except Exception as e:
         print(f"\U0001f4c2 Project index error: {e}")
         return query
-
-
-def _route_query(query: str) -> list:
-    """Determine which retrieval sources to search based on query intent."""
-    q = query.lower()
-    sources = []
-    code_words = ['def ', 'class ', 'function', 'code', 'error', 'bug', 'import', 'syntax', 'method', 'module', 'script']
-    recall_words = ['remember', 'last time', 'yesterday', 'before', 'earlier', 'we discussed', 'you said', 'previously']
-    note_words = ['note', 'wrote', 'my notes', 'i said', 'todo', 'task', 'remind', 'list']
-    if any(w in q for w in code_words):
-        sources.append('project')
-    if any(w in q for w in recall_words):
-        sources.append('memory')
-    if any(w in q for w in note_words):
-        sources.append('notes')
-    if not sources:
-        sources = ['memory', 'notes']  # default: personal context
-    return sources
-
-
-def _enforce_token_budget(context_blocks: list, max_tokens: int = 6000) -> list:
-    """
-    Trim context blocks to fit within token budget.
-    context_blocks: list of (priority: int, text: str) tuples, higher priority = kept first.
-    Returns list of text strings that fit within budget.
-    """
-    # Sort by priority descending
-    sorted_blocks = sorted(context_blocks, key=lambda x: x[0], reverse=True)
-    kept, total = [], 0
-    for priority, text in sorted_blocks:
-        est_tokens = len(text) // 4
-        if total + est_tokens <= max_tokens:
-            kept.append(text)
-            total += est_tokens
-        else:
-            # Try to fit a truncated version
-            remaining = (max_tokens - total) * 4
-            if remaining > 200:
-                kept.append(text[:remaining] + '\n[truncated]')
-            break
-    if total > 0:
-        print(f"📊 Context budget: ~{total} tokens used of {max_tokens} limit")
-    return kept
 
 
 # ── Main CLI ──────────────────────────────────────────────────────────
@@ -863,20 +961,8 @@ def main():
                         print(_todo_resp)
                         continue
 
-                    sources = _route_query(query)
-                    ctx_blocks: list[tuple[int, str]] = []
-
-                    file_aug = _inject_file_context(query)
-                    if file_aug != query:
-                        ctx_blocks.append((2, file_aug[:file_aug.rfind('\n\n---\n\n')]))
-
-                    if args.project and 'project' in sources:
-                        proj_aug = _inject_project_context(query, args.project)
-                        if proj_aug != query:
-                            ctx_blocks.append((3, proj_aug[:proj_aug.rfind('\n\n---\n\n')]))
-
-                    kept = _enforce_token_budget(ctx_blocks)
-                    augmented_query = ('\n\n'.join(kept) + '\n\n---\n\n' + query) if kept else query
+                    augmented_query = _inject_file_context(query)
+                    augmented_query = _inject_project_context(augmented_query, args.project) if args.project else augmented_query
                     result = rain.recursive_reflect(augmented_query, verbose=args.verbose)
                     if result:
                         print(f"\n\U0001f31f Final Answer (confidence: {result.confidence:.2f}, "
@@ -983,27 +1069,9 @@ def main():
                         )
                     else:
                         print("\U0001f310 No results found \u2014 using local knowledge")
-                sources = _route_query(args.query)
-                ctx_blocks: list[tuple[int, str]] = []
-
-                # Web search context (priority 0) — already baked into query if web search ran
-                if args.web_search and '\n\n---\n\n' in query:
-                    web_ctx = query[:query.rfind('\n\n---\n\n')]
-                    ctx_blocks.append((0, web_ctx))
-                    query = args.query  # reset; budget enforcement will reassemble with question
-
-                file_aug = _inject_file_context(args.query)
-                if file_aug != args.query:
-                    ctx_blocks.append((2, file_aug[:file_aug.rfind('\n\n---\n\n')]))
-
-                if args.project and 'project' in sources:
-                    proj_aug = _inject_project_context(args.query, args.project)
-                    if proj_aug != args.query:
-                        ctx_blocks.append((3, proj_aug[:proj_aug.rfind('\n\n---\n\n')]))
-
-                kept = _enforce_token_budget(ctx_blocks)
-                if kept:
-                    query = '\n\n'.join(kept) + '\n\n---\n\n' + query
+                query = _inject_file_context(query)
+                if args.project:
+                    query = _inject_project_context(query, args.project)
 
                 # Auto-detect react vs reflect
                 _mode = (
