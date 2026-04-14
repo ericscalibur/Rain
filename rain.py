@@ -20,6 +20,7 @@ import re
 import sys
 import argparse
 import signal
+from pathlib import Path
 from datetime import datetime
 
 # ── Core imports from the rain package ────────────────────────────────
@@ -802,6 +803,14 @@ def main():
                 print("\U0001f9ea TEST MODE \u2014 feedback disabled, calibration read-only", flush=True)
             memory.start_session(model=resolved_model)
 
+        # Load RAIN.md self-knowledge document (same as server.py does at startup)
+        _rain_md = ""
+        _rain_md_path = Path(__file__).parent / "RAIN.md"
+        try:
+            _rain_md = _rain_md_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+
         # Initialize Rain \u2014 multi-agent (always)
         rain = MultiAgentOrchestrator(
             default_model=resolved_model,
@@ -812,6 +821,7 @@ def main():
             sandbox_enabled=args.sandbox,
             sandbox_timeout=args.sandbox_timeout,
             quiet=args.quiet,
+            rain_md=_rain_md,
         )
         if not args.quiet:
             print(f"\u2705 Rain initialized (multi-agent mode) \u00b7 default model: {resolved_model}")
