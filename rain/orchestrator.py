@@ -774,13 +774,16 @@ class MultiAgentOrchestrator:
 
     def _start_spinner(self, message: str):
         stop_event = threading.Event()
+        if self.quiet:
+            return stop_event, None
         thread = threading.Thread(target=self._spinner, args=(message, stop_event), daemon=True)
         thread.start()
         return stop_event, thread
 
     def _stop_spinner(self, stop_event, thread):
         stop_event.set()
-        thread.join()
+        if thread is not None:
+            thread.join()
 
     def _kill_current_process(self):
         if self._current_process:
@@ -2380,7 +2383,8 @@ class MultiAgentOrchestrator:
             primary_agent = self.agents[AgentType.LOGIC]
         elif custom_agent:
             primary_agent = custom_agent
-            print(f"{_ts()} 🔀 Routing to custom agent: {custom_agent.description}...")
+            if not self.quiet:
+                print(f"{_ts()} 🔀 Routing to custom agent: {custom_agent.description}...")
         else:
             # Route on the original user question only — if project context was
             # injected (via --project or project_path), it sits before \n\n---\n\n
@@ -2392,7 +2396,8 @@ class MultiAgentOrchestrator:
             self._skill_match_query = routing_query
             agent_type = self.router.route(routing_query)
             primary_agent = self.agents[agent_type]
-            print(f"{_ts()} 🔀 Routing to {self.router.explain(agent_type)}...")
+            if not self.quiet:
+                print(f"{_ts()} 🔀 Routing to {self.router.explain(agent_type)}...")
 
             # ── Two-tier LOGIC: fast model for simple queries ──────────────
             # Short factual checks and syllogisms → llama3.2 (5–15s)
@@ -2402,7 +2407,8 @@ class MultiAgentOrchestrator:
                 if fast_model and fast_model != primary_agent.model_name \
                         and self._is_simple_logic_query(routing_query):
                     primary_agent = replace(primary_agent, model_name=fast_model)
-                    print(f"{_ts()} ⚡ Simple query — fast LOGIC tier ({fast_model})", flush=True)
+                    if not self.quiet:
+                        print(f"{_ts()} ⚡ Simple query — fast LOGIC tier ({fast_model})", flush=True)
 
             # ── Two-tier DOMAIN: fast model for simple factual queries ─────
             # Short Bitcoin/Lightning factual checks → llama3.2 (5–15s)
@@ -2412,7 +2418,8 @@ class MultiAgentOrchestrator:
                 if fast_model and fast_model != primary_agent.model_name \
                         and self._is_simple_logic_query(routing_query):
                     primary_agent = replace(primary_agent, model_name=fast_model)
-                    print(f"{_ts()} ⚡ Simple query — fast DOMAIN tier ({fast_model})", flush=True)
+                    if not self.quiet:
+                        print(f"{_ts()} ⚡ Simple query — fast DOMAIN tier ({fast_model})", flush=True)
 
         # ── 2. Primary Agent ──────────────────────────────────────────
         # When an image is attached, override routing to Logic Agent —
