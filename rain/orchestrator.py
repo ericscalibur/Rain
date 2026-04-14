@@ -1097,6 +1097,13 @@ class MultiAgentOrchestrator:
                 'your capabilities', 'your phases', 'your architecture',
                 'your pipeline', 'your agents', 'your models', 'your roadmap',
                 'your memory', 'your tools', 'your skills',
+                # Self-knowledge training questions
+                'what models', 'models do you', 'models are you', 'models installed',
+                'content filter', 'safety system', 'moderation layer',
+                'confidence scor', 'confidence system', 'calibration',
+                'memory stored', 'where is your', 'where are you',
+                'do you have a known', 'known bug', 'known issue',
+                'do you have content', 'do you have safety',
             ]
             _q_lower = query.lower()
             _is_self_ref = any(p in _q_lower for p in _SELF_REF_PATTERNS)
