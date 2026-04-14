@@ -247,12 +247,13 @@ class MultiAgentOrchestrator:
     def __init__(self, default_model: Optional[str] = None, max_iterations: int = 3,
                  confidence_threshold: float = 0.8, system_prompt: str = None,
                  memory: RainMemory = None, sandbox_enabled: bool = False,
-                 sandbox_timeout: int = 10, rain_md: str = ""):
+                 sandbox_timeout: int = 10, rain_md: str = "", quiet: bool = False):
         # Auto-detect the best available model when none is explicitly specified.
         self.default_model = default_model or auto_pick_default_model()
         self.max_iterations = max_iterations
         self.confidence_threshold = confidence_threshold
         self.memory = memory
+        self.quiet = quiet
         self.sandbox_enabled = sandbox_enabled
         self.sandbox = CodeSandbox(timeout=sandbox_timeout) if sandbox_enabled else None
         self.reflection_history: List[ReflectionResult] = []
@@ -302,7 +303,7 @@ class MultiAgentOrchestrator:
             try:
                 self.skill_loader = SkillLoader()
                 self.skill_loader.load()
-                if self.skill_loader.count > 0:
+                if self.skill_loader.count > 0 and not self.quiet:
                     print(f"🧰 {self.skill_loader.count} skill(s) loaded from {SkillLoader.GLOBAL_SKILLS_DIR}")
             except Exception:
                 self.skill_loader = None
@@ -312,7 +313,7 @@ class MultiAgentOrchestrator:
         if self.memory:
             try:
                 self._calibration_factors = self.memory.get_calibration_factors()
-                if self._calibration_factors:
+                if self._calibration_factors and not self.quiet:
                     print(f"📊 Calibration loaded: {len(self._calibration_factors)} agent(s) have historical accuracy data")
             except Exception:
                 pass
@@ -321,7 +322,7 @@ class MultiAgentOrchestrator:
         if self.memory:
             try:
                 gaps = self.memory.get_top_gaps(limit=3)
-                if gaps:
+                if gaps and not self.quiet:
                     print(f"🔍 Recent knowledge gaps ({len(gaps)}):", flush=True)
                     for g in gaps:
                         desc = (g.get("gap_description") or g.get("query", ""))[:160]

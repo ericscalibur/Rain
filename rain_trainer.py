@@ -303,7 +303,7 @@ def run_rain(query: str, timeout: int = 150) -> tuple[str, float]:
     t0 = time.time()
     try:
         result = subprocess.run(
-            ["python3", str(RAIN_PATH), query],
+            ["python3", str(RAIN_PATH), "--quiet", query],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(RAIN_PATH.parent),
         )
