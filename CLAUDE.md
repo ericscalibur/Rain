@@ -161,12 +161,18 @@ Read `ROADMAP.md` for the full phase breakdown including what was built in each.
 ```
 qwen3.5:9b          6.6 GB  → LOGIC, DOMAIN, GENERAL, primary fallback
 qwen3:8b            5.2 GB  → SYNTHESIZER
+qwen3:4b            ~2.6 GB → lightweight SYNTHESIZER / fast fallback
+qwen3:1.7b          ~1.1 GB → ultra-fast fallback
 llama3.2:latest     2.0 GB  → REFLECTION, SEARCH
 qwen2.5-coder:7b    4.7 GB  → DEV (primary)
-codestral:latest    12  GB  → DEV (fallback, slow cold-start)
-llama3.2-vision     7.8 GB  → vision pre-processing
+qwen2.5:14b         ~9 GB   → heavy LOGIC / large context tasks
+gemma3:12b          ~8 GB   → alternative LOGIC/DOMAIN
+gemma3:4b           ~3 GB   → lightweight LOGIC alternative
+rain-tuned:latest   ?       → LoRA fine-tuned adapter (role TBD — verify in finetune.py)
 nomic-embed-text    274 MB  → embeddings (semantic search, project index)
 ```
+
+Removed since last update: `codestral:latest`, `llama3.2-vision` (no longer installed).
 
 Models are auto-scanned on startup via `_scan_installed_models()`. `_best_model_for()` uses prefix matching — no hardcoded exact names.
 
