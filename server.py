@@ -775,7 +775,210 @@ def _sanitize_search_results(results: list) -> list:
     return sanitized
 
 
-class SessionSummary(BaseModel):
+def _handle_todo_mutation(query: str):
+    """
+    Intercept to-do add/complete/remove mutations before the LLM runs.
+
+    Handles:
+    - Ordinal references: "task number one", "task 1", "#3"
+    - Compound requests: complete tasks AND add a new one in the same message
+    - Natural add phrasing: "to the list: X", "new task: X"
+
+    Returns (handled: bool, response: str).
+    Short-circuits the LLM entirely — no hallucination possible.
+    """
+    import os as _os, re as _re, difflib as _difflib
+
+    q = query.lower().strip()
+
+    # Locate Erics-to-do.md from the repo root (needed early for path queries)
+    script_dir = _os.path.dirname(_os.path.abspath(__file__))
+    repo_root = script_dir
+    for _ in range(5):
+        if _os.path.isdir(_os.path.join(repo_root, ".git")):
+            break
+        parent = _os.path.dirname(repo_root)
+        if parent == repo_root:
+            break
+        repo_root = parent
+    todo_path = _os.path.join(repo_root, "Erics-to-do.md")
+
+    # ── File-path / "save to disk" read queries ─────────────────────────
+    is_path_q = bool(
+        _re.search(r'\b(file\s*path|save.*disk|verify.*file|access.*file|explicit\w*\s+save)\b', q)
+        and _re.search(r'\b(to[\s-]?do|todo|list|it)\b', q)
+    )
+    if is_path_q:
+        if _os.path.isfile(todo_path):
+            with open(todo_path, "r", encoding="utf-8") as f:
+                contents = f.read().strip()
+            return True, f"The to-do list is saved at:\n\n`{todo_path}`\n\nCurrent contents:\n\n{contents}"
+        else:
+            return True, f"The to-do list will be saved at:\n\n`{todo_path}`\n\nThe file does not exist yet — tell me what to put on the list and I'll create it."
+
+    is_remove   = bool(_re.search(r'\b(remove|delete|cross.?off|done with)\b', q))
+    is_complete = bool(_re.search(r'\b(complete[d]?|finish(?:ed)?|check.?off|mark.*done|(?:is|are)\s+done)\b', q))
+    # Detect "remove all except X" / "keep only X" — implies is_remove
+    remove_except_m = _re.search(
+        r'\b(?:remove|delete)\s+(?:all|everything)(?:\s+\w+){0,4}\s+except\s+(?:for\s+)?["\']?(.+?)["\']?\s*(?:[,.]|$)',
+        query, _re.IGNORECASE,
+    ) or _re.search(
+        r'\bkeep\s+only\s+["\']?(.+?)["\']?\s*(?:[,.]|$)',
+        query, _re.IGNORECASE,
+    )
+    if remove_except_m:
+        is_remove = True
+    # "to the list", "to my list", "new task/tasks", "let's add X", or compound remove+add
+    is_add = bool(
+        _re.search(r'\b(add|new item|put)\b', q)
+        and (
+            _re.search(r'\b(to[- ]?do|to\s+(?:the|my)\s+list|tasks?)\b', q)
+            or is_remove or is_complete
+            or _re.search(r"(?:let'?s\s+add|also\s+add|and\s+add|please\s+add)", q)
+        )
+    )
+
+    if not (is_remove or is_complete or is_add):
+        return False, ""
+
+    if not _os.path.isfile(todo_path):
+        if is_add and not (is_remove or is_complete):
+            # Create the file so the add can proceed
+            with open(todo_path, "w", encoding="utf-8") as f:
+                f.write("# Eric's To-Do List\n\n")
+            lines: list = ["# Eric's To-Do List\n", "\n"]
+            item_lines: list = []
+            item_texts: list = []
+        else:
+            return False, ""
+    else:
+        with open(todo_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        item_lines = [(i, l) for i, l in enumerate(lines) if l.strip().startswith("- [")]
+        item_texts = [_re.sub(r"^- \[.\] ", "", l).strip() for _, l in item_lines]
+
+    # Word/digit → 1-based position
+    _ORDINALS = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        **{str(n): n for n in range(1, 11)},
+    }
+
+    def _resolve_positions(q_text):
+        """Extract 1-based positions from 'task 1', 'task number three', '#2', etc."""
+        positions = set()
+        for m in _re.finditer(
+            r'\btask\s+(?:number\s+)?(?:#)?(\d+|\w+)\b'
+            r'|\bnumber\s+(\d+|\w+)\b'
+            r'|\b#(\d+)\b',
+            q_text, _re.IGNORECASE,
+        ):
+            raw = next(g for g in m.groups() if g is not None).lower()
+            if raw in _ORDINALS:
+                positions.add(_ORDINALS[raw])
+        return sorted(positions)
+
+    action_descs = []
+
+    # ── "Remove all except X" / "keep only X" ──────────────────────────
+    if remove_except_m and is_remove and not is_complete and item_texts:
+        keep_text = remove_except_m.group(1).strip().strip("'\".,;")
+        keep_lower = keep_text.lower()
+        fuzzy_keep = _difflib.get_close_matches(keep_lower, [t.lower() for t in item_texts], n=1, cutoff=0.3)
+        if fuzzy_keep:
+            kept_item = item_texts[[t.lower() for t in item_texts].index(fuzzy_keep[0])]
+        else:
+            keep_words = [w for w in keep_lower.split() if len(w) > 3]
+            kept_item = next((t for t in item_texts if any(w in t.lower() for w in keep_words)), None)
+        if kept_item:
+            removed_items = [t for t in item_texts if t != kept_item]
+            lines = [l for l in lines if not any(t in l for t in removed_items)]
+            item_texts = [kept_item]
+            if removed_items:
+                action_descs.append(f"Removed {len(removed_items)} task(s), kept \"{kept_item}\"")
+            is_remove = False  # handled; skip normal remove logic
+
+    # ── Complete / remove ───────────────────────────────────────────────
+    if is_complete or is_remove:
+        positions = _resolve_positions(q)
+        matched = []
+        if positions:
+            for pos in positions:
+                if 1 <= pos <= len(item_texts):
+                    matched.append(item_texts[pos - 1])
+        else:
+            # Fuzzy text match fallback
+            q_clean = _re.sub(
+                r'\b(remove|delete|cross off|done with|completed?|finished?|check off|'
+                r'mark(?:\s+as)?\s+done|from|off|my|the|to[\s-]?do|list|task(?:s)?|number)\b',
+                " ", q, flags=_re.IGNORECASE,
+            )
+            q_clean = _re.sub(r'\s+', ' ', q_clean).strip()
+            fuzzy = _difflib.get_close_matches(q_clean, item_texts, n=3, cutoff=0.3)
+            if not fuzzy:
+                words = [w for w in q_clean.split() if len(w) > 3]
+                fuzzy = [t for t in item_texts if any(w in t.lower() for w in words)][:3]
+            matched = fuzzy
+
+        if matched:
+            new_lines = []
+            for l in lines:
+                hit = next((t for t in matched if t in l), None)
+                if hit:
+                    if is_complete:
+                        new_lines.append(l.replace("- [ ]", "- [x]", 1))
+                        action_descs.append(f"Completed \"{hit}\"")
+                    # is_remove: drop line (don't append)
+                else:
+                    new_lines.append(l)
+            lines = new_lines
+
+    # ── Add ─────────────────────────────────────────────────────────────
+    if is_add:
+        item = None
+        # "to the list: X", "to my list: X", "new task: X", "to-do: X"
+        m = _re.search(
+            r'(?:to\s+(?:the|my)\s+list|new\s+task|to[\s-]?do)\s*:\s*(.+?)(?:\s*$|\s*\.)',
+            query, _re.IGNORECASE,
+        )
+        if m:
+            item = m.group(1).strip()
+        if not item:
+            # "add X to [the/my] [list/to-do]"
+            m = _re.search(r'\badd\s+(.+?)\s+to\b', query, _re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                if not _re.match(r'^(?:a\s+)?(?:new\s+)?(?:task|item)$', candidate, _re.IGNORECASE):
+                    item = candidate
+        if not item:
+            # "let's add X", "also add X", bare "add 'X'" at end of message
+            m = _re.search(
+                r"(?:let'?s\s+|also\s+|and\s+|please\s+)?add\s+['\"]?(.+?)['\"]?\s*[,.]?\s*$",
+                query, _re.IGNORECASE,
+            )
+            if m:
+                candidate = m.group(1).strip().strip("'\"")
+                if candidate and not _re.match(r'^(?:a\s+)?(?:new\s+)?(?:task|item)$', candidate, _re.IGNORECASE):
+                    item = candidate
+
+        if item:
+            item = item.rstrip('.,;!')
+            lines.append(f"- [ ] {item.capitalize()}\n")
+            action_descs.append(f"Added \"{item.capitalize()}\"")
+
+    if not action_descs:
+        return False, ""
+
+    with open(todo_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    updated = "".join(lines).strip()
+    summary = " · ".join(action_descs)
+    return True, f"✅ {summary}.\n\nUpdated to-do list:\n\n{updated}"
+
+
+
     id: str
     started_at: str
     ended_at: Optional[str]
@@ -2277,6 +2480,17 @@ async def _stream_chat(req: ChatRequest) -> AsyncGenerator[str, None]:
     def emit(event: dict):
         """Thread-safe event emitter — puts onto the asyncio queue."""
         loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    # ── To-do mutation short-circuit ─────────────────────────────────────
+    # Intercept add/complete/remove requests before the LLM runs.
+    # The LLM cannot reliably mutate a file it hasn't read — every path
+    # through recursive_reflect risks hallucinating the list contents.
+    # File mutations are deterministic: read → edit → write → return result.
+    _todo_handled, _todo_resp = _handle_todo_mutation(req.message)
+    if _todo_handled:
+        import json as _json
+        yield f"data: {_json.dumps({'type': 'done', 'content': _todo_resp, 'confidence': 1.0, 'duration': 0.0, 'iterations': 1, 'improvements': [], 'sandbox': None, 'search_results': 0, 'vision_used': False, 'data_sources': ['live']})}\n\n"
+        return
 
     def run_pipeline():
         """Runs in a background thread — calls the synchronous orchestrator."""
