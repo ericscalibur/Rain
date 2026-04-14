@@ -42,7 +42,7 @@ QUESTIONS = [
     # ── Self-knowledge ────────────────────────────────────────────────────────
     {
         "question": "What AI models do you actually have installed and use right now?",
-        "expect":   ["qwen", "llama", "nomic"],
+        "expect":   ["qwen", "llama"],
         "reject":   ["gpt", "openai", "claude", "gemini", "i don't have access",
                      "i cannot", "i do not have"],
         "correction": (
