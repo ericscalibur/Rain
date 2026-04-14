@@ -717,11 +717,14 @@ def main():
                         help="Path to a project directory \u2014 injects relevant source code chunks into every query (Phase 7)")
     parser.add_argument("--meta", action="store_true",
                         help="Phase 11: run metacognition agent \u2014 generate a self-assessment report and exit")
+    parser.add_argument("--quiet", "-Q", action="store_true",
+                        help="Suppress startup banner and all informational prints \u2014 output the response only")
 
     args = parser.parse_args()
 
     # Print Rain banner
-    print("""
+    if not args.quiet:
+        print("""
     \u26c8\ufe0f  RAIN - Sovereign AI Ecosystem  \u26c8\ufe0f
 
     "Be like rain - essential, unstoppable, and free."
@@ -781,13 +784,14 @@ def main():
             resolved_model = args.model
         else:
             resolved_model = auto_pick_default_model()
-            print(f"\U0001f50d Auto-detected model: {resolved_model}")
+            if not args.quiet:
+                print(f"\U0001f50d Auto-detected model: {resolved_model}")
 
         # Initialize memory unless disabled
         memory = None
         if not args.no_memory:
             memory = RainMemory(test_mode=getattr(args, 'test_mode', False))
-            if memory.test_mode:
+            if memory.test_mode and not args.quiet:
                 print("\U0001f9ea TEST MODE \u2014 feedback disabled, calibration read-only", flush=True)
             memory.start_session(model=resolved_model)
 
@@ -800,14 +804,16 @@ def main():
             memory=memory,
             sandbox_enabled=args.sandbox,
             sandbox_timeout=args.sandbox_timeout,
+            quiet=args.quiet,
         )
-        print(f"\u2705 Rain initialized (multi-agent mode) \u00b7 default model: {resolved_model}")
+        if not args.quiet:
+            print(f"\u2705 Rain initialized (multi-agent mode) \u00b7 default model: {resolved_model}")
         # Propagate --project path onto the orchestrator so _build_memory_context
         # can proactively query the knowledge graph for structural context.
         if args.project:
             rain.project_path = args.project
 
-        if args.sandbox:
+        if args.sandbox and not args.quiet:
             print(f"\U0001f52c Sandbox enabled \u2014 code will be executed and verified (timeout: {args.sandbox_timeout}s)")
 
         # --agents flag \u2014 just show roster and exit
@@ -868,7 +874,7 @@ def main():
             return
 
         # Show startup greeting if memory exists
-        if memory:
+        if memory and not args.quiet:
             greeting = memory.get_startup_greeting()
             if greeting:
                 print(f"\n\U0001f9e0 Rain remembers:\n{greeting}\n")
@@ -1007,12 +1013,13 @@ def main():
                 and rain._auto_mode(args.query) == 'react'
             )
             if _use_react:
-                if not args.react:
+                if not args.react and not args.quiet:
                     print(f"\u26a1 Auto-selected ReAct mode ({rain.router.explain_mode('react')})")
             if _use_react:
                 result = rain.react_loop(args.query, verbose=args.verbose)
                 if result:
-                    print(f"\n\U0001f31f Final Answer ({result.iteration} step(s) \u00b7 {result.duration_seconds:.1f}s):")
+                    if not args.quiet:
+                        print(f"\n\U0001f31f Final Answer ({result.iteration} step(s) \u00b7 {result.duration_seconds:.1f}s):")
                     print(result.content)
             elif args.task:
                 result = rain.execute_task(
@@ -1021,7 +1028,8 @@ def main():
                     confirm_fn=_interactive_confirm if _TOOLS_AVAILABLE else None,
                 )
                 if result:
-                    print(f"\n\u2705 Task complete \u00b7 {result.iteration} step(s) \u00b7 {result.duration_seconds:.1f}s")
+                    if not args.quiet:
+                        print(f"\n\u2705 Task complete \u00b7 {result.iteration} step(s) \u00b7 {result.duration_seconds:.1f}s")
                     print(result.content)
             else:
                 query = args.query
@@ -1032,10 +1040,11 @@ def main():
                     return
 
                 if args.web_search:
-                    print("\U0001f310 Searching the web...")
+                    if not args.quiet:
+                        print("\U0001f310 Searching the web...")
 
                     live_block = _cli_fetch_live_data(query)
-                    if live_block:
+                    if live_block and not args.quiet:
                         if "GITHUB DATA" in live_block and "mempool" not in live_block.lower():
                             print("\u26a1 Live data retrieved from GitHub API")
                         elif "GITHUB DATA" in live_block:
@@ -1044,7 +1053,7 @@ def main():
                             print("\u26a1 Live data retrieved from mempool.space")
 
                     search_results = _cli_duckduckgo_search(query)
-                    if search_results:
+                    if search_results and not args.quiet:
                         print(f"\U0001f310 {len(search_results)} result(s) retrieved \u2014 routing to Search Agent")
 
                     if live_block or search_results:
@@ -1068,7 +1077,8 @@ def main():
                             f"Question: {args.query}"
                         )
                     else:
-                        print("\U0001f310 No results found \u2014 using local knowledge")
+                        if not args.quiet:
+                            print("\U0001f310 No results found \u2014 using local knowledge")
                 query = _inject_file_context(query)
                 if args.project:
                     query = _inject_project_context(query, args.project)
@@ -1080,19 +1090,21 @@ def main():
                     else ('react' if args.react else 'reflect')
                 )
                 if _mode == 'react':
-                    print(f"\u26a1 Auto-selected ReAct mode ({rain.router.explain_mode('react')})")
+                    if not args.quiet:
+                        print(f"\u26a1 Auto-selected ReAct mode ({rain.router.explain_mode('react')})")
                     result = rain.react_loop(query, verbose=args.verbose)
                 else:
                     result = rain.recursive_reflect(query, verbose=args.verbose)
                 if not result:
                     print("\u274c No response \u2014 the model may have timed out. Check that Ollama is running and try again.")
                     return
-                print(f"\n\U0001f31f Final Answer (confidence: {result.confidence:.2f}, {result.iteration} iterations, {result.duration_seconds:.1f}s):")
-                if result.sandbox_results:
-                    verified_count = sum(1 for r in result.sandbox_results if r.success)
-                    total_count = len(result.sandbox_results)
-                    status = "\u2705 all blocks verified" if verified_count == total_count else f"\u26a0\ufe0f  {verified_count}/{total_count} blocks verified"
-                    print(f"\U0001f52c Sandbox: {status} ({total_count} block{'s' if total_count != 1 else ''} tested)")
+                if not args.quiet:
+                    print(f"\n\U0001f31f Final Answer (confidence: {result.confidence:.2f}, {result.iteration} iterations, {result.duration_seconds:.1f}s):")
+                    if result.sandbox_results:
+                        verified_count = sum(1 for r in result.sandbox_results if r.success)
+                        total_count = len(result.sandbox_results)
+                        status = "\u2705 all blocks verified" if verified_count == total_count else f"\u26a0\ufe0f  {verified_count}/{total_count} blocks verified"
+                        print(f"\U0001f52c Sandbox: {status} ({total_count} block{'s' if total_count != 1 else ''} tested)")
                 print(result.content)
 
         else:
