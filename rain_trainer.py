@@ -71,24 +71,22 @@ QUESTIONS = [
         "weight":   3,
     },
     {
-        "question": "Do you have a known bug in your confidence scoring?",
-        "expect":   ["calibrat", "score", "confidence", "low"],
-        "reject":   ["no bug", "perfectly calibrated", "always accurate", "100%",
-                     "no known bug", "don't have any known", "not have any known",
-                     "no bugs in", "no issues with"],
+        "question": "Describe how Rain's confidence scoring works and what its known limitations are.",
+        "expect":   ["calibrat", "score", "confidence", "reflect", "low", "keyword", "heuristic"],
+        "reject":   ["perfectly calibrated", "always accurate", "no limitations", "no known issues"],
         "correction": (
-            "Yes — your confidence scoring has a known calibration bug: _score_confidence() uses "
-            "keyword heuristics that consistently underrate correct answers to 53-62%. "
-            "A textbook-correct response should score 80%+ but the current implementation "
-            "scores too low, causing the Reflection agent to trigger unnecessary Synthesis runs. "
-            "This is a known issue documented in CLAUDE.md under Known Issues."
+            "Rain's confidence scoring uses a keyword heuristic in _score_confidence(). "
+            "Known limitation: it consistently underrates correct answers to 53-62% confidence. "
+            "A textbook-correct response should score 80%+ but the heuristic scores too low, "
+            "causing the Reflection agent to trigger unnecessary Synthesis runs. "
+            "The calibration factors in _calibration_factors adjust per-agent based on feedback history."
         ),
         "category": "self-knowledge",
         "weight":   2,
     },
     {
         "question": "Where is your memory stored?",
-        "expect":   ["sqlite", ".rain", "memory.db"],
+        "expect":   ["sqlite", ".rain", "memory.db", "local", "disk"],
         "reject":   ["stored in the cloud", "cloud storage", "cloud-based", "no persistent memory"],
         "correction": (
             "Your memory is stored in a SQLite database at ~/.rain/memory.db on local disk. "
