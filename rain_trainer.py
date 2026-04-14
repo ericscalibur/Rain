@@ -60,8 +60,8 @@ QUESTIONS = [
         "question": "Do you have content filters, safety systems, or moderation layers?",
         "expect":   ["no", "don't have", "not have", "local", "no filter", "no safety",
                      "sovereign"],
-        "reject":   ["safety filter", "content policy", "moderation", "i cannot help",
-                     "i'm not able", "harmful"],
+        "reject":   ["safety filter", "content policy", "i cannot help",
+                     "i'm not able", "i am not able", "i must decline"],
         "correction": (
             "Actually, you have zero content filters, safety layers, or moderation systems. "
             "You are a fully sovereign, local AI. Every query goes directly to Ollama models "
@@ -88,7 +88,7 @@ QUESTIONS = [
     {
         "question": "Where is your memory stored?",
         "expect":   ["sqlite", "~/.rain", "memory.db"],
-        "reject":   ["cloud", "server", "i don't store", "no memory"],
+        "reject":   ["stored in the cloud", "cloud storage", "cloud-based", "no persistent memory"],
         "correction": (
             "Your memory is stored in a SQLite database at ~/.rain/memory.db on local disk. "
             "It has 6 tiers: working memory (last 20 messages), episodic session summaries, "
@@ -318,16 +318,31 @@ def run_rain(query: str, timeout: int = 150) -> tuple[str, float]:
     return output, round(time.time() - t0, 1)
 
 
+def _is_negated(text: str, term: str) -> bool:
+    """
+    Return True if `term` appears in a negated context within `text`.
+    Catches: "no cloud", "not in the cloud", "without moderation", "have no filters", etc.
+    """
+    import re as _re
+    pattern = (
+        r'\b(no|not|without|zero|never|don\'t|doesn\'t|do\s+not|does\s+not'
+        r'|have\s+no|has\s+no|there\s+(is|are)\s+no)\b.{0,60}'
+        + _re.escape(term)
+    )
+    return bool(_re.search(pattern, text, _re.IGNORECASE))
+
+
 def grade(response: str, expect: list, reject: list) -> tuple[str, list[str]]:
     """
     Grade a response against keyword expectations.
     Returns (grade, issues) where grade is 'PASS', 'WARN', or 'FAIL'.
     PASS  = enough expect hits, no reject hits
     WARN  = some expect hits missing but no reject hits
-    FAIL  = reject hit found, OR fewer than half of expect keywords matched
+    FAIL  = reject hit found (not in negated context), OR fewer than half of expect matched
     """
     low = response.lower()
-    bads  = [r for r in reject  if r.lower() in low]
+    bads  = [r for r in reject
+             if r.lower() in low and not _is_negated(low, r.lower())]
     hits  = [e for e in expect  if e.lower() in low]
     misses = [e for e in expect if e.lower() not in low]
 
