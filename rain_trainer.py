@@ -162,7 +162,7 @@ QUESTIONS = [
     # ── Bitcoin ───────────────────────────────────────────────────────────────
     {
         "question": "What is Bitcoin's target block time?",
-        "expect":   ["10 minute", "10-minute", "ten minute"],
+        "expect":   ["10 minute"],
         "reject":   ["1 minute", "2 minute", "30 second", "15 second", "5 minute"],
         "correction": (
             "Bitcoin's target block time is 10 minutes. "
@@ -187,7 +187,7 @@ QUESTIONS = [
     },
     {
         "question": "How does the Lightning Network work?",
-        "expect":   ["payment channel", "off-chain", "layer 2", "multisig"],
+        "expect":   ["payment channel", "off-chain"],
         "reject":   ["ethereum", "proof of stake"],
         "correction": (
             "Lightning Network is a layer-2 protocol on Bitcoin. "
@@ -201,7 +201,7 @@ QUESTIONS = [
     },
     {
         "question": "What is the Bitcoin halving?",
-        "expect":   ["halv", "block reward", "210,000", "subsidy"],
+        "expect":   ["halv", "block reward", "210,000"],
         "reject":   [],
         "correction": (
             "The Bitcoin halving occurs every 210,000 blocks (~4 years). "
@@ -216,7 +216,7 @@ QUESTIONS = [
     # ── Linux / sysadmin ─────────────────────────────────────────────────────
     {
         "question": "How do I list all listening ports on my Linux system?",
-        "expect":   ["ss", "netstat", "lsof"],
+        "expect":   ["ss", "netstat"],
         "reject":   [],
         "correction": (
             "Use `ss -tlnp` (modern, preferred) to list TCP listening ports with process names. "
@@ -283,7 +283,7 @@ QUESTIONS = [
     # ── Nostr ─────────────────────────────────────────────────────────────────
     {
         "question": "What is Nostr?",
-        "expect":   ["decentrali", "relay", "public key", "event", "protocol"],
+        "expect":   ["decentrali", "relay", "public key", "protocol"],
         "reject":   ["blockchain", "token", "ethereum"],
         "correction": (
             "Nostr (Notes and Other Stuff Transmitted by Relays) is a simple, open, decentralized "
