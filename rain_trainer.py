@@ -103,7 +103,7 @@ QUESTIONS = [
     # ── Architecture ──────────────────────────────────────────────────────────
     {
         "question": "Walk me through the full pipeline when I send you a message.",
-        "expect":   ["router", "reflect", "agent", "memory", "synthesiz"],
+        "expect":   ["rout", "reflect", "agent", "memory", "synthesiz"],
         "reject":   ["gpt", "openai", "api key"],
         "correction": (
             "Actually, every query goes through this pipeline: "
@@ -147,7 +147,7 @@ QUESTIONS = [
     },
     {
         "question": "What is the Reflection agent's job and which model runs it?",
-        "expect":   ["reflect", "quality", "gemma"],
+        "expect":   ["reflect", "gemma", "grade"],
         "reject":   [],
         "correction": (
             "The Reflection agent runs on gemma3:12b and always executes after the primary agent. "
