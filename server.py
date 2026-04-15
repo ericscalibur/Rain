@@ -814,7 +814,7 @@ def _handle_todo_mutation(query: str):
 
     # is_remove catches both explicit removes and "mark done / complete" phrasing
     is_remove = bool(_re.search(
-        r'\b(remove|delete|cross.?off|done with|completed?|finished?|check.?off|mark.*done)\b', q))
+        r'\b(remove|removed|delete|cross.?off|done with|completed?|finished?|check.?off|mark.*done|are\s+done|can\s+be\s+removed|the\s+rest)\b', q))
     # Detect "remove all except X" / "keep only X" — implies is_remove
     remove_except_m = _re.search(
         r'\b(?:remove|delete)\s+(?:all|everything)(?:\s+\w+){0,4}\s+except\s+(?:for\s+)?["\']?(.+?)["\']?\s*(?:[,.]|$)',
@@ -825,11 +825,18 @@ def _handle_todo_mutation(query: str):
     )
     if remove_except_m:
         is_remove = True
-    # "to the list", "to my list", "new task/tasks", "let's add X", or compound remove+add
+    # "keep first item, remove the rest" — keep item 1, remove everything else
+    keep_first_rest_m = (
+        _re.search(r"\bhaven.t\s+done.{0,50}\bfirst\b|\bfirst\s+item.{0,40}\bkeep\b|\bkeep\s+that\b", q, _re.IGNORECASE)
+        and _re.search(r'\bthe\s+rest\b', q, _re.IGNORECASE)
+    )
+    if keep_first_rest_m:
+        is_remove = True
+    # "to the list", "to my list", "new task/tasks", "new item", "let's add X", or compound remove+add
     is_add = bool(
         _re.search(r'\b(add|new item|put)\b', q)
         and (
-            _re.search(r'\b(to[- ]?do|to\s+(?:the|my)\s+list|tasks?)\b', q)
+            _re.search(r'\b(to[- ]?do|to\s+(?:the|my)\s+list|tasks?|new\s+item)\b', q)
             or is_remove
             or _re.search(r"(?:let'?s\s+add|also\s+add|and\s+add|please\s+add)", q)
         )
@@ -903,6 +910,15 @@ def _handle_todo_mutation(query: str):
             if removed_items:
                 action_descs.append(f"Removed {len(removed_items)} task(s), kept \"{kept_item}\"")
             is_remove = False  # handled; skip normal remove logic
+
+    # ── "Keep first item, remove the rest" ───────────────────────────────
+    if keep_first_rest_m and is_remove and item_texts and len(item_texts) > 1:
+        kept_item = item_texts[0]
+        removed_items = item_texts[1:]
+        lines = _renumber([l for l in lines if not any(t in l for t in removed_items)])
+        item_texts = [kept_item]
+        action_descs.append(f"Kept \"{kept_item}\", removed {len(removed_items)} completed task(s)")
+        is_remove = False  # handled
 
     # ── Remove ────────────────────────────────────────────────────────────
     if is_remove and item_texts:
