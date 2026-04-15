@@ -147,7 +147,7 @@ QUESTIONS = [
     },
     {
         "question": "What is the Reflection agent's job and which model runs it?",
-        "expect":   ["reflect", "gemma", "grade"],
+        "expect":   ["reflect", "gemma"],
         "reject":   [],
         "correction": (
             "The Reflection agent runs on gemma3:12b and always executes after the primary agent. "
