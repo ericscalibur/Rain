@@ -812,6 +812,23 @@ def _handle_todo_mutation(query: str):
         else:
             return True, f"The to-do list will be saved at:\n\n`{todo_path}`\n\nThe file does not exist yet — tell me what to put on the list and I'll create it."
 
+    # ── Simple read queries ("what's on my to-do list?", "show my list", etc.) ─
+    is_read_q = bool(
+        _re.search(r'\b(what.{0,25}(on|in)|show|list|display|read|see)\b', q)
+        and _re.search(r'\b(to[\s-]?do|todo)\b', q)
+        and not _re.search(r'\b(add|remove|delete|complete|finish|done|cross|check|mark|put|new item)\b', q)
+    )
+    if is_read_q:
+        if _os.path.isfile(todo_path):
+            with open(todo_path, 'r') as f:
+                contents = f.read().strip()
+            if contents:
+                return True, f"Here's your current to-do list:\n\n{contents}"
+            else:
+                return True, "Your to-do list is empty."
+        else:
+            return True, "You don't have a to-do list yet. Tell me what to add and I'll create it."
+
     # is_remove catches both explicit removes and "mark done / complete" phrasing
     is_remove = bool(_re.search(
         r'\b(remove|removed|delete|cross.?off|done with|completed?|finished?|check.?off|mark.*done|are\s+done|can\s+be\s+removed|the\s+rest)\b', q))
