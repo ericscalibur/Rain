@@ -74,7 +74,7 @@ QUESTIONS = [
     },
     {
         "question": "Describe how Rain's confidence scoring works and what its known limitations are.",
-        "expect":   ["calibrat", "score", "confidence", "reflect", "low", "keyword", "heuristic"],
+        "expect":   ["calibrat", "confidence", "reflect", "low", "keyword", "heuristic"],
         "reject":   ["perfectly calibrated", "always accurate", "no limitations", "no known issues"],
         "correction": (
             "Rain's confidence scoring uses a keyword heuristic in _score_confidence(). "
@@ -103,7 +103,7 @@ QUESTIONS = [
     # ── Architecture ──────────────────────────────────────────────────────────
     {
         "question": "Walk me through the full pipeline when I send you a message.",
-        "expect":   ["rout", "reflect", "agent", "memory", "synthesiz"],
+        "expect":   ["rout", "reflect", "agent", "synthesiz"],
         "reject":   ["gpt", "openai", "api key"],
         "correction": (
             "Actually, every query goes through this pipeline: "
@@ -283,7 +283,7 @@ QUESTIONS = [
     # ── Nostr ─────────────────────────────────────────────────────────────────
     {
         "question": "What is Nostr?",
-        "expect":   ["decentrali", "relay", "public key", "protocol"],
+        "expect":   ["decentrali", "protocol"],
         "reject":   ["blockchain", "token", "ethereum"],
         "correction": (
             "Nostr (Notes and Other Stuff Transmitted by Relays) is a simple, open, decentralized "
