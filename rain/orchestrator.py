@@ -1104,6 +1104,12 @@ class MultiAgentOrchestrator:
                 'memory stored', 'where is your', 'where are you',
                 'do you have a known', 'known bug', 'known issue',
                 'do you have content', 'do you have safety',
+                # Architecture training questions
+                'walk me through', 'full pipeline', 'when i send',
+                'memory tier', 'how many memory', 'what does each',
+                'what agent', 'which agent', 'which model runs',
+                'reflection agent', "reflection's job", 'reflection job',
+                'code generation', 'debugging agent', 'handles code',
             ]
             _q_lower = query.lower()
             _is_self_ref = any(p in _q_lower for p in _SELF_REF_PATTERNS)

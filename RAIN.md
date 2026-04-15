@@ -53,7 +53,7 @@ Query → Router (keyword scoring, instant)
 | DOMAIN | Domain knowledge: Bitcoin, Lightning, sovereignty, cryptography |
 | GENERAL | Fallback for everything else |
 | SEARCH | Synthesizes live web search results + mempool.space + GitHub API |
-| REFLECTION | Always runs — critiques primary response, rates quality — gemma3:4b |
+| REFLECTION | Always runs — critiques primary response, rates quality — gemma3:12b |
 | SYNTHESIZER | Rewrites the response when Reflection finds real problems |
 | VISION | Pre-processes images into text descriptions — llama3.2-vision |
 | EMBEDDINGS | nomic-embed-text — semantic search, project indexing |

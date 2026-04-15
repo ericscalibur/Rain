@@ -135,23 +135,22 @@ QUESTIONS = [
     },
     {
         "question": "What agent handles code generation and debugging?",
-        "expect":   ["dev", "qwen2.5-coder", "coder"],
+        "expect":   ["dev", "code"],
         "reject":   ["gpt", "codex"],
         "correction": (
             "The DEV agent handles code generation and debugging. "
-            "Its primary model is qwen2.5-coder:7b, with codestral:latest as a fallback. "
-            "It is selected when the query scores highest on CODE_KEYWORDS in AgentRouter, "
-            "specifically when code intent strictly leads other categories."
+            "Its primary model is qwen2.5-coder:7b. "
+            "It is selected when the query scores highest on CODE_KEYWORDS in AgentRouter."
         ),
         "category": "architecture",
         "weight":   1,
     },
     {
         "question": "What is the Reflection agent's job and which model runs it?",
-        "expect":   ["reflect", "quality", "llama3.2", "llama"],
+        "expect":   ["reflect", "quality", "gemma"],
         "reject":   [],
         "correction": (
-            "The Reflection agent runs on llama3.2:latest and always executes after the primary agent. "
+            "The Reflection agent runs on gemma3:12b and always executes after the primary agent. "
             "It grades the primary response as EXCELLENT, GOOD, NEEDS_IMPROVEMENT, or POOR. "
             "If the grade is NEEDS_IMPROVEMENT or POOR, the Synthesizer (qwen3:8b) rewrites the answer. "
             "Reflection runs on EVERY query — it cannot be skipped."
