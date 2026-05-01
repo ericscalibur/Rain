@@ -170,13 +170,16 @@ def get_good_responses() -> list:
 
 # ── Training data export ───────────────────────────────────────────────────────
 
-def export_alpaca_jsonl(corrections: list, good_examples: list, out_path: Path) -> int:
+def export_alpaca_jsonl(corrections: list, good_examples: list, out_path: Path,
+                        seed_examples: list | None = None) -> int:
     """
     Export training data in Alpaca instruction-following JSONL format.
     Compatible with HuggingFace TRL, Unsloth, mlx_lm, and most fine-tuning frameworks.
 
+    Priority order: corrections > good examples > seed examples.
     Corrections (bad + user fix) are highest quality — preference data.
-    Good examples are positive reinforcement — "this is what good looks like".
+    Good examples are positive reinforcement.
+    Seed examples are curated Claude-style patterns (from claude_seed_training.py).
 
     Format:
         {"instruction": "<query>", "input": "", "output": "<ideal answer>"}
@@ -184,7 +187,6 @@ def export_alpaca_jsonl(corrections: list, good_examples: list, out_path: Path) 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     with open(out_path, "w", encoding="utf-8") as f:
-        # Corrections first — highest signal
         for c in corrections:
             record = {
                 "instruction": c["query"].strip(),
@@ -195,7 +197,6 @@ def export_alpaca_jsonl(corrections: list, good_examples: list, out_path: Path) 
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
-        # Good responses as positive examples
         for g in good_examples:
             record = {
                 "instruction": g["query"].strip(),
@@ -206,72 +207,96 @@ def export_alpaca_jsonl(corrections: list, good_examples: list, out_path: Path) 
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
+        for s in (seed_examples or []):
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+            written += 1
     return written
 
 
-def export_chatml_txt(corrections: list, good_examples: list, out_path: Path) -> int:
-    """
-    Export training data in ChatML format for llama.cpp finetune.
-    """
+def export_chatml_txt(corrections: list, good_examples: list, out_path: Path,
+                      seed_examples: list | None = None) -> int:
+    """Export training data in ChatML format for llama.cpp finetune."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
+
+    def _write_turn(f, system: str, user: str, assistant: str):
+        f.write(f"<|im_start|>system\n{system}\n<|im_end|>\n")
+        f.write(f"<|im_start|>user\n{user}\n<|im_end|>\n")
+        f.write(f"<|im_start|>assistant\n{assistant}\n<|im_end|>\n\n")
+
     with open(out_path, "w", encoding="utf-8") as f:
         for c in corrections:
-            f.write("<|im_start|>system\n")
-            f.write(FINETUNE_SYSTEM + "\n")
-            f.write("<|im_end|>\n")
-            f.write("<|im_start|>user\n")
-            f.write(c["query"].strip() + "\n")
-            f.write("<|im_end|>\n")
-            f.write("<|im_start|>assistant\n")
-            f.write(c["correction"].strip() + "\n")
-            f.write("<|im_end|>\n\n")
+            _write_turn(f, FINETUNE_SYSTEM, c["query"].strip(), c["correction"].strip())
             written += 1
         for g in good_examples:
-            f.write("<|im_start|>system\n")
-            f.write(FINETUNE_SYSTEM + "\n")
-            f.write("<|im_end|>\n")
-            f.write("<|im_start|>user\n")
-            f.write(g["query"].strip() + "\n")
-            f.write("<|im_end|>\n")
-            f.write("<|im_start|>assistant\n")
-            f.write(g["response"].strip() + "\n")
-            f.write("<|im_end|>\n\n")
+            _write_turn(f, FINETUNE_SYSTEM, g["query"].strip(), g["response"].strip())
             written += 1
+        for s in (seed_examples or []):
+            sys  = s.get("system", FINETUNE_SYSTEM)
+            user = s.get("instruction", "")
+            asst = s.get("output", "")
+            if user and asst:
+                _write_turn(f, sys, user, asst)
+                written += 1
     return written
+
+
+SEED_PATH = TRAINING_DIR / "claude_seed.jsonl"
+
+
+def load_seed_examples() -> list:
+    """Load curated Claude-style seed examples from claude_seed.jsonl if present."""
+    if not SEED_PATH.exists():
+        return []
+    try:
+        examples = []
+        for line in SEED_PATH.read_text().splitlines():
+            line = line.strip()
+            if line:
+                examples.append(json.loads(line))
+        return examples
+    except Exception as exc:
+        print(_c(YELLOW, f"⚠️  Could not load seed data: {exc}"))
+        return []
 
 
 def export_training_data() -> dict:
-    """Export corrections + good responses to training files."""
-    corrections = get_corrections()
+    """Export corrections + good responses + seed examples to training files."""
+    corrections   = get_corrections()
     good_examples = get_good_responses()
-    total = len(corrections) + len(good_examples)
+    seed_examples = load_seed_examples()
 
-    if total == 0:
+    organic_total = len(corrections) + len(good_examples)
+
+    if organic_total == 0 and not seed_examples:
         print(_c(YELLOW, "⚠️  No training data found."))
-        print("   Use 👍👎 in the web UI to build a dataset.")
-        print("   Good responses (👍) count as positive training examples.")
-        print("   Bad responses (👎) with typed corrections are the highest-quality signal.")
-        return {"corrections": 0, "good_examples": 0, "total": 0}
+        print("   Use 👍👎 in the web UI to build organic data.")
+        print("   Or run: python3 claude_seed_training.py  (to generate seed data)")
+        return {"corrections": 0, "good_examples": 0, "seed": 0, "total": 0}
 
     TRAINING_DIR.mkdir(parents=True, exist_ok=True)
 
     jsonl_path  = TRAINING_DIR / "training.jsonl"
     chatml_path = TRAINING_DIR / "training.chatml.txt"
 
-    n_jsonl  = export_alpaca_jsonl(corrections, good_examples, jsonl_path)
-    n_chatml = export_chatml_txt(corrections, good_examples, chatml_path)
+    n_jsonl  = export_alpaca_jsonl(corrections, good_examples, jsonl_path,
+                                   seed_examples=seed_examples)
+    n_chatml = export_chatml_txt(corrections, good_examples, chatml_path,
+                                  seed_examples=seed_examples)
 
     print(_c(GREEN, f"✅ Exported {n_jsonl} training examples:"))
     if corrections:
         print(f"   • {len(corrections)} corrections (bad rating + user fix)")
     if good_examples:
         print(f"   • {len(good_examples)} good responses (positive examples)")
+    if seed_examples:
+        print(f"   • {len(seed_examples)} Claude-style seed examples")
     print(f"   Alpaca JSONL  → {jsonl_path}")
     print(f"   ChatML (txt)  → {chatml_path}")
     return {
         "corrections":   len(corrections),
         "good_examples": len(good_examples),
+        "seed":          len(seed_examples),
         "total":         n_jsonl,
         "jsonl_path":    str(jsonl_path),
         "chatml_path":   str(chatml_path),

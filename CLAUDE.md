@@ -146,7 +146,7 @@ Every synthesis run logs both the primary and synthesized response to the `synth
 | Phase 7A: Real-Time World Awareness + IDE Integration | ✅ Complete |
 | Phase 7B: Live Data Feeds (mempool.space, BTC price) | ✅ Complete |
 | Phase 7C: GitHub API + Freshness Badges + Project UI + File Watcher | ✅ Complete |
-| Phase 8: Voice & Ambient Interface | ⭐ Next |
+| Phase 8: Voice & Ambient Interface | ✅ Substantially complete (STT + TTS done; wake word + CLI flag remaining) |
 | Phase 9: Multimodal Perception | ✅ Complete |
 | Phase 10: Knowledge Graph & Deep Project Intelligence | ✅ Complete |
 | Phase 11: Metacognition & Self-Directed Evolution | 🔲 Not started |

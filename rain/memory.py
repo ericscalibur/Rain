@@ -164,6 +164,8 @@ class RainMemory:
                 ("session_id",       "TEXT"),
                 ("gap_description",  "TEXT"),
                 ("rating",           "TEXT"),
+                ("hit_count",        "INTEGER DEFAULT 1"),
+                ("last_hit",         "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE knowledge_gaps ADD COLUMN {_col} {_defn}")
@@ -1342,6 +1344,78 @@ class RainMemory:
         except Exception:
             return []
 
+    def increment_gap_hit(self, query: str, correction: str = "") -> bool:
+        """When user corrects Rain, check if an existing open gap matches this topic.
+        If yes: increment hit_count and update last_hit — recurring pattern confirmed.
+        If no: return False so the caller can create a new gap.
+        Keyword matching uses 3+ content-word overlap to avoid false positives.
+        """
+        import re as _re
+        _STOP = {'the','a','an','is','are','was','were','be','have','has','had',
+                 'do','does','did','to','of','in','for','on','with','at','by','i',
+                 'you','it','we','they','what','which','this','that','and','or',
+                 'but','not','how','when','where','why','me','my','your'}
+        text = (query + " " + correction).lower()
+        q_words = {w for w in _re.findall(r'\w+', text) if w not in _STOP and len(w) > 2}
+        if not q_words:
+            return False
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    """SELECT id, gap_description, query FROM knowledge_gaps
+                       WHERE resolved = 0 ORDER BY timestamp DESC LIMIT 20"""
+                ).fetchall()
+                for row in rows:
+                    gap_text = ((row[1] or "") + " " + (row[2] or "")).lower()
+                    gap_words = {w for w in _re.findall(r'\w+', gap_text)
+                                 if w not in _STOP and len(w) > 2}
+                    if len(q_words & gap_words) >= 3:
+                        conn.execute(
+                            """UPDATE knowledge_gaps
+                               SET hit_count = COALESCE(hit_count, 1) + 1,
+                                   last_hit  = ?
+                               WHERE id = ?""",
+                            (datetime.now().isoformat(), row[0])
+                        )
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def resolve_gaps_for_topic(self, query: str) -> int:
+        """Mark open gaps as resolved when the user gives a 👍 on a related topic.
+        Returns count of gaps resolved.
+        """
+        import re as _re
+        _STOP = {'the','a','an','is','are','was','were','be','have','has','had',
+                 'do','does','did','to','of','in','for','on','with','at','by','i',
+                 'you','it','we','they','what','which','this','that','and','or',
+                 'but','not','how','when','where','why','me','my','your'}
+        q_words = {w for w in _re.findall(r'\w+', query.lower())
+                   if w not in _STOP and len(w) > 2}
+        if not q_words:
+            return 0
+        resolved = 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    """SELECT id, gap_description, query FROM knowledge_gaps
+                       WHERE resolved = 0 ORDER BY timestamp DESC LIMIT 20"""
+                ).fetchall()
+                for row in rows:
+                    gap_text = ((row[1] or "") + " " + (row[2] or "")).lower()
+                    gap_words = {w for w in _re.findall(r'\w+', gap_text)
+                                 if w not in _STOP and len(w) > 2}
+                    if len(q_words & gap_words) >= 3:
+                        conn.execute(
+                            "UPDATE knowledge_gaps SET resolved = 1 WHERE id = ?",
+                            (row[0],)
+                        )
+                        resolved += 1
+        except Exception:
+            pass
+        return resolved
+
     def get_performance_stats(self) -> dict:
         """
         Phase 11: return per-agent performance metrics for the dashboard.
@@ -1718,3 +1792,102 @@ Summary:"""
                 DELETE FROM ab_results;
             """)
 
+    def run_heartbeat(self) -> dict:
+        """Prune, deduplicate, and condense memory across sessions.
+
+        What it does:
+          1. Delete ghost sessions — no messages, no summary, not current session
+          2. Delete orphaned vectors — no corresponding session row
+          3. Prune old messages — sessions older than 60 days keep summary only
+          4. Deduplicate session_facts — same (session_id, fact_key): keep latest
+          5. Close stale knowledge gaps — unresolved and older than 30 days
+          6. Vacuum the DB to reclaim space
+
+        Returns a dict of counts for each operation.
+        """
+        from datetime import datetime, timedelta
+        stats = {}
+        now = datetime.now()
+        cutoff_msgs  = (now - timedelta(days=60)).isoformat()
+        cutoff_gaps  = (now - timedelta(days=30)).isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            # 1. Ghost sessions — no messages, no summary, not current session
+            ghost_ids = [
+                r[0] for r in conn.execute(
+                    """SELECT s.id FROM sessions s
+                       LEFT JOIN messages m ON m.session_id = s.id
+                       WHERE s.id != ? AND (s.summary IS NULL OR s.summary = '')
+                         AND m.id IS NULL""",
+                    (self.session_id,)
+                ).fetchall()
+            ]
+            if ghost_ids:
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({','.join('?'*len(ghost_ids))})",
+                    ghost_ids
+                )
+                conn.execute(
+                    f"DELETE FROM vectors WHERE session_id IN ({','.join('?'*len(ghost_ids))})",
+                    ghost_ids
+                )
+                conn.execute(
+                    f"DELETE FROM session_facts WHERE session_id IN ({','.join('?'*len(ghost_ids))})",
+                    ghost_ids
+                )
+            stats['ghost_sessions_removed'] = len(ghost_ids)
+
+            # 2. Orphaned vectors — session no longer exists
+            orphan_result = conn.execute(
+                """DELETE FROM vectors WHERE session_id NOT IN
+                   (SELECT id FROM sessions) AND session_id != ?""",
+                (self.session_id,)
+            )
+            stats['orphan_vectors_removed'] = orphan_result.rowcount
+
+            # 3. Old messages — sessions older than 60 days: drop messages, keep summary
+            old_sessions = [
+                r[0] for r in conn.execute(
+                    """SELECT id FROM sessions
+                       WHERE id != ? AND started_at < ?
+                         AND (summary IS NOT NULL AND summary != '')""",
+                    (self.session_id, cutoff_msgs)
+                ).fetchall()
+            ]
+            if old_sessions:
+                msg_result = conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({','.join('?'*len(old_sessions))})",
+                    old_sessions
+                )
+                vec_result = conn.execute(
+                    f"DELETE FROM vectors WHERE session_id IN ({','.join('?'*len(old_sessions))})",
+                    old_sessions
+                )
+                stats['old_messages_pruned'] = msg_result.rowcount
+                stats['old_vectors_pruned'] = vec_result.rowcount
+            else:
+                stats['old_messages_pruned'] = 0
+                stats['old_vectors_pruned'] = 0
+
+            # 4. Deduplicate session_facts — keep only latest per (session_id, fact_key)
+            dup_result = conn.execute(
+                """DELETE FROM session_facts WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM session_facts
+                       GROUP BY session_id, fact_key
+                   )"""
+            )
+            stats['duplicate_facts_removed'] = dup_result.rowcount
+
+            # 5. Close stale knowledge gaps
+            stale_result = conn.execute(
+                """UPDATE knowledge_gaps SET resolved = 1
+                   WHERE resolved = 0 AND timestamp < ?""",
+                (cutoff_gaps,)
+            )
+            stats['stale_gaps_closed'] = stale_result.rowcount
+
+        # 6. Vacuum outside the transaction context
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("VACUUM")
+
+        return stats
