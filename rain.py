@@ -758,6 +758,8 @@ def main():
                         help="Path to a project directory \u2014 injects relevant source code chunks into every query (Phase 7)")
     parser.add_argument("--meta", action="store_true",
                         help="Phase 11: run metacognition agent \u2014 generate a self-assessment report and exit")
+    parser.add_argument("--heartbeat", action="store_true",
+                        help="Run memory heartbeat \u2014 prune ghost sessions, deduplicate vectors, condense old history, close stale gaps")
     parser.add_argument("--quiet", "-Q", action="store_true",
                         help="Suppress startup banner and all informational prints \u2014 output the response only")
 
@@ -887,6 +889,21 @@ def main():
             report = memory.generate_meta_report(_query_model)
             print(report)
             print()
+            return
+
+        if args.heartbeat:
+            if not memory:
+                print("❌ Memory required for heartbeat. Remove --no-memory flag.")
+                return
+            print("\n⛈️  Running memory heartbeat...\n")
+            stats = memory.run_heartbeat()
+            print(f"   Ghost sessions removed:    {stats.get('ghost_sessions_removed', 0)}")
+            print(f"   Orphaned vectors removed:  {stats.get('orphan_vectors_removed', 0)}")
+            print(f"   Old messages pruned:       {stats.get('old_messages_pruned', 0)}")
+            print(f"   Old vectors pruned:        {stats.get('old_vectors_pruned', 0)}")
+            print(f"   Duplicate facts removed:   {stats.get('duplicate_facts_removed', 0)}")
+            print(f"   Stale gaps closed:         {stats.get('stale_gaps_closed', 0)}")
+            print(f"\n✅ Heartbeat complete.\n")
             return
 
         # --memories flag - show session history + knowledge gaps

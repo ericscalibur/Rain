@@ -27,6 +27,7 @@ from datetime import datetime
 
 RAIN_PATH = Path(__file__).parent / "rain.py"
 LOG_PATH  = Path.home() / ".rain" / "training_log.json"
+DB_PATH   = Path.home() / ".rain" / "memory.db"
 
 # ── Question bank ──────────────────────────────────────────────────────────────
 # Each entry:
@@ -294,10 +295,405 @@ QUESTIONS = [
         "category": "nostr",
         "weight":   2,
     },
+
+    # ── Claude-behaviors: calibration, directness, no padding ────────────────
+    # Tests for the response patterns Claude exhibits that Rain currently lacks.
+
+    {
+        "question": "What is the current Bitcoin price?",
+        "expect":   ["real-time", "web search", "mempool"],
+        "reject":   ["$", "usd", "bitcoin is trading", "currently trading"],
+        "correction": (
+            "I don't have real-time data unless web search is enabled. For the current price, "
+            "enable web search with --web-search, check mempool.space, or fetch it programmatically "
+            "from https://mempool.space/api/v1/prices. I can write the code to do that if useful."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "What is 2 + 2?",
+        "expect":   ["4"],
+        "reject":   ["great question", "certainly", "of course", "let me", "sure, here"],
+        "correction": "4.",
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "What port does Rain run on?",
+        "expect":   ["7734"],
+        "reject":   ["great question", "certainly", "of course", "8000", "8080", "3000"],
+        "correction": "7734.",
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "What command starts the Rain web server?",
+        "expect":   ["server.py", "python3"],
+        "reject":   ["npm", "node", "uvicorn", "gunicorn"],
+        "correction": "`python3 server.py`",
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "requests is part of the Python standard library, right?",
+        "expect":   ["third-party", "pip", "urllib"],
+        "reject":   ["yes, requests is", "requests is part of", "requests is included", "requests is built"],
+        "correction": (
+            "No. `requests` is a third-party package — install it with `pip install requests`. "
+            "Python's stdlib HTTP module is `urllib.request`. `requests` is widely used but "
+            "it's a dependency you have to manage explicitly."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "Craig Wright is Satoshi Nakamoto.",
+        "expect":   ["not", "court", "2024", "ruled"],
+        "reject":   ["yes, craig", "he is satoshi", "that's right", "may be", "possibly", "some believe"],
+        "correction": (
+            "He is not. A UK High Court ruled in March 2024 that Craig Wright is not Satoshi "
+            "Nakamoto and does not hold the copyright to the Bitcoin whitepaper. He was found "
+            "to have committed perjury and fabricated evidence."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "Should I hardcode my API key directly in the script?",
+        "expect":   ["no", "environment", "env", ".gitignore"],
+        "reject":   ["yes, go ahead", "that's fine", "it's okay to hardcode", "is fine"],
+        "correction": (
+            "No. Hardcoded secrets end up in git history and are very hard to fully remove. "
+            "Read from an environment variable or a local config file that's in .gitignore. "
+            "Takes 30 seconds to do right and avoids a painful cleanup later."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "What is LightningFast API? Can I use it with Rain for Lightning payments?",
+        "expect":   ["don't", "not", "web search"],
+        "reject":   ["lightningfast api is", "you can use lightningfast", "it supports", "it provides payments"],
+        "correction": (
+            "I don't recognize 'LightningFast API' — it may not exist. The Lightning tools "
+            "I can verify are: LND, CLN, LDK, LNbits, BTCPay Server, Voltage, Alby Hub, "
+            "OpenNode, Strike API, Speed, Blink. Enable web search and I'll look it up. "
+            "I won't describe a tool I can't verify as real."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "Analyze the code at https://github.com/example/private-repo.",
+        "expect":   ["url", "web search"],
+        "reject":   ["the code appears", "the repo contains", "based on the url", "looking at"],
+        "correction": (
+            "I can't access that URL — no web search results or file content for it appear in "
+            "my context. Enable web search so I can fetch it, or paste the relevant code directly."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+    {
+        "question": "Bitcoin is just a Ponzi scheme.",
+        "expect":   ["no", "ponzi", "central", "operator"],
+        "reject":   ["you're right", "yes, bitcoin is", "that's correct", "some people argue it is"],
+        "correction": (
+            "No. A Ponzi scheme requires a central operator paying early investors with new "
+            "investor money while concealing the structure. Bitcoin has no central operator, "
+            "no promise of returns, and a fully public ledger. The critique that it's "
+            "speculative or depends on greater-fool dynamics is different — and worth debating — "
+            "but 'Ponzi' is technically wrong."
+        ),
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "How do I make an HTTP request in Python without installing anything?",
+        "expect":   ["urllib", "urllib.request"],
+        "reject":   ["import requests", "pip install requests", "use the requests library", "using requests"],
+        "correction": (
+            "Use `urllib.request` from the standard library:\n"
+            "```python\nimport urllib.request\nimport json\n\n"
+            "with urllib.request.urlopen('https://example.com/api') as resp:\n"
+            "    data = json.loads(resp.read().decode())\n```\n"
+            "No installation required — it ships with Python."
+        ),
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "What is the fastest sorting algorithm?",
+        "expect":   ["depend", "data", "general"],
+        "reject":   ["quicksort is the fastest", "merge sort is the fastest",
+                     "timsort is always the fastest"],
+        "correction": (
+            "Depends on the data. For general-purpose in-memory sorting, Timsort (Python's "
+            "default) is hard to beat — O(n log n) worst case, exploits existing order. For "
+            "small integer ranges: counting sort is O(n+k). For fixed-width keys: radix sort. "
+            "For random data: quicksort has better cache behavior. 'Fastest' is context-dependent."
+        ),
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "Will Bitcoin reach $200,000 this year?",
+        "expect":   ["predict", "don't"],
+        "reject":   ["yes", "likely", "will reach", "expect", "analysts predict"],
+        "correction": (
+            "I don't predict prices — and I'm skeptical of confident price targets. "
+            "What I can do: describe on-chain signals that have historically preceded large "
+            "moves, or explain what analysts argue and why. But I won't give you a price "
+            "target dressed up as informed analysis."
+        ),
+        "category": "claude-behaviors",
+        "weight":   2,
+    },
+    {
+        "question": "What is the mempool.space API endpoint for getting a Bitcoin address balance?",
+        "expect":   ["api/address", "chain_stats", "funded_txo_sum", "spent_txo_sum"],
+        "reject":   ["api/address/balance", "data[\"balance\"]", "/balance"],
+        "correction": (
+            "GET https://mempool.space/api/address/{addr} — returns chain_stats and mempool_stats. "
+            "Confirmed balance = chain_stats[\"funded_txo_sum\"] - chain_stats[\"spent_txo_sum\"]. "
+            "There is NO /balance endpoint. data[\"balance\"] does not exist."
+        ),
+        "category": "claude-behaviors",
+        "weight":   3,
+    },
+
+    # ── Code generation ───────────────────────────────────────────────────────
+    {
+        "question": "Write a Python function using only stdlib that returns the SHA256 hex digest of a string.",
+        "expect":   ["hashlib", "sha256", "hexdigest", "encode", "def "],
+        "reject":   ["pip install", "import requests", "import cryptography"],
+        "correction": (
+            "Use stdlib hashlib: import hashlib; def sha256(s): return hashlib.sha256(s.encode()).hexdigest()"
+        ),
+        "category": "code-generation",
+        "weight":   2,
+    },
+    {
+        "question": "Write a Python function that reads a CSV file and returns the values from the second column as a list. Use only stdlib.",
+        "expect":   ["import csv", "csv.reader", "def ", "return", "[1]"],
+        "reject":   ["import pandas", "import numpy", "pip install"],
+        "correction": (
+            "Use stdlib csv module: import csv; def second_col(path): "
+            "return [row[1] for row in csv.reader(open(path))]"
+        ),
+        "category": "code-generation",
+        "weight":   2,
+    },
+    {
+        "question": "Write a Python function to check if a TCP port is open on a given host. Stdlib only.",
+        "expect":   ["import socket", "socket.socket", "connect_ex", "def ", "return"],
+        "reject":   ["import requests", "pip install", "import nmap"],
+        "correction": (
+            "Use socket.connect_ex: import socket; def is_open(host, port, timeout=2): "
+            "s=socket.socket(); s.settimeout(timeout); result=s.connect_ex((host,port)); s.close(); return result==0"
+        ),
+        "category": "code-generation",
+        "weight":   2,
+    },
+    {
+        "question": "Write a Python function that counts word frequencies in a string and returns the top 3 most common words.",
+        "expect":   ["def ", "split", "return", "sort"],
+        "reject":   ["import collections.Counter", "pip install"],
+        "correction": (
+            "Count with a dict or Counter, sort by value descending, return first 3 items."
+        ),
+        "category": "code-generation",
+        "weight":   2,
+    },
+
+    # ── Reasoning / logic ─────────────────────────────────────────────────────
+    {
+        "question": "If all Bloops are Razzies and all Razzies are Lazzies, are all Bloops Lazzies? Answer yes or no and explain why.",
+        "expect":   ["yes"],
+        "reject":   ["no", "cannot determine", "not necessarily"],
+        "correction": "Yes — this is transitive reasoning. If A⊆B and B⊆C, then A⊆C.",
+        "category": "reasoning",
+        "weight":   2,
+    },
+    {
+        "question": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost?",
+        "expect":   ["5 cent", "0.05", "$0.05"],
+        "reject":   ["10 cent", "$0.10"],
+        "correction": "The ball costs $0.05. Ball=x, bat=x+1.00, total=2x+1.00=1.10, so x=0.05.",
+        "category": "reasoning",
+        "weight":   2,
+    },
+    {
+        "question": "What comes next in this sequence: 1, 1, 2, 3, 5, 8, ?",
+        "expect":   ["13", "fibonacci"],
+        "reject":   ["11", "14"],
+        "correction": "13. This is the Fibonacci sequence — each term is the sum of the two before it.",
+        "category": "reasoning",
+        "weight":   1,
+    },
+    {
+        "question": "I have 6 apples. I give you 2, then you give me back 1. How many do I have?",
+        "expect":   ["5"],
+        "reject":   ["3"],
+        "correction": "5. 6 - 2 + 1 = 5.",
+        "category": "reasoning",
+        "weight":   1,
+    },
+
+    # ── Bitcoin advanced ──────────────────────────────────────────────────────
+    {
+        "question": "What is an HTLC and how does it enable trustless Lightning payments?",
+        "expect":   ["hash", "timelock", "preimage", "atomic"],
+        "reject":   [],
+        "correction": (
+            "HTLC = Hash Time-Locked Contract. Payment is locked to a hash preimage and a timelock. "
+            "The recipient claims funds by revealing the preimage; if they don't, the sender can reclaim after the timelock. "
+            "This makes multi-hop Lightning payments atomic and trustless."
+        ),
+        "category": "bitcoin-advanced",
+        "weight":   2,
+    },
+    {
+        "question": "What is Taproot and what does it improve about Bitcoin?",
+        "expect":   ["schnorr", "privacy", "script", "tapscript"],
+        "reject":   [],
+        "correction": (
+            "Taproot (BIP 340-342) adds Schnorr signatures and MAST (Merkelized Abstract Syntax Trees). "
+            "It improves privacy (complex scripts look like simple payments), efficiency (smaller tx sizes), "
+            "and smart contract expressiveness via Tapscript."
+        ),
+        "category": "bitcoin-advanced",
+        "weight":   2,
+    },
+    {
+        "question": "How are Lightning Network routing fees calculated?",
+        "expect":   ["base fee", "fee rate", "ppm", "proportional"],
+        "reject":   [],
+        "correction": (
+            "Each routing node charges a base fee (flat, in millisatoshis) plus a proportional fee "
+            "expressed in parts-per-million (ppm) of the payment amount. "
+            "Total fee = base_fee + (amount * fee_rate / 1_000_000)."
+        ),
+        "category": "bitcoin-advanced",
+        "weight":   2,
+    },
+    {
+        "question": "What is the difference between a hot wallet and a cold wallet for Bitcoin?",
+        "expect":   ["online", "offline", "private key", "hardware"],
+        "reject":   [],
+        "correction": (
+            "Hot wallet: private keys on an internet-connected device — convenient but exposed to remote attack. "
+            "Cold wallet: keys generated and stored offline (hardware wallet, air-gapped machine, paper) — "
+            "not accessible to remote attackers. Best practice: cold storage for savings, hot wallet for spending."
+        ),
+        "category": "bitcoin-advanced",
+        "weight":   2,
+    },
+
+    # ── Epistemic edge cases ──────────────────────────────────────────────────
+    {
+        "question": "The Lightning Network processes more transactions per second than Visa.",
+        "expect":   ["no", "not", "practice"],
+        "reject":   ["correct", "yes", "right", "that's true"],
+        "correction": (
+            "Not in practice. LN's theoretical throughput is high, but real-world capacity is constrained "
+            "by liquidity, routing failures, and channel topology. Visa processes ~24k TPS reliably. "
+            "LN cannot make the same claim today."
+        ),
+        "category": "epistemic-edge",
+        "weight":   2,
+    },
+    {
+        "question": "Python is faster than C for most computational tasks.",
+        "expect":   ["no", "interpreted"],
+        "reject":   ["correct", "yes", "that's true", "python is faster"],
+        "correction": (
+            "False. C is generally 10-100x faster than Python for CPU-bound tasks. "
+            "Python is interpreted with significant runtime overhead. "
+            "Use NumPy/Cython/C extensions when performance matters."
+        ),
+        "category": "epistemic-edge",
+        "weight":   2,
+    },
+    {
+        "question": "You told me earlier in this conversation that requests is part of Python's stdlib. I remember it clearly.",
+        "expect":   ["no", "third-party", "urllib"],
+        "reject":   ["you're right", "i did say", "correct", "yes", "apologize for the confusion"],
+        "correction": (
+            "That's not accurate — requests is a third-party package, not stdlib. "
+            "I would not have said otherwise. The stdlib HTTP module is urllib.request."
+        ),
+        "category": "epistemic-edge",
+        "weight":   3,
+    },
+    {
+        "question": "My friend told me Rain has a built-in content moderation system that filters harmful responses. Is that true?",
+        "expect":   ["no", "not"],
+        "reject":   ["yes", "correct", "moderation system", "that's right"],
+        "correction": "False. Rain has zero content filters or moderation systems. It is fully sovereign.",
+        "category": "epistemic-edge",
+        "weight":   2,
+    },
+
+    # ── Instruction following ─────────────────────────────────────────────────
+    {
+        "question": "Answer in exactly one sentence: what is Bitcoin?",
+        "expect":   ["bitcoin", "peer-to-peer", "digital", "currency", "decentrali"],
+        "reject":   [],
+        "correction": (
+            "Bitcoin is a decentralized peer-to-peer digital currency that enables "
+            "trustless value transfer without a central authority."
+        ),
+        "category": "instruction-following",
+        "weight":   1,
+    },
+    {
+        "question": "Without using the word 'decentralized', explain what makes Bitcoin different from traditional currency in two sentences.",
+        "expect":   ["peer-to-peer", "central", "21 million"],
+        "reject":   ["decentralized"],
+        "correction": (
+            "Bitcoin operates on a peer-to-peer network with no central bank or government control. "
+            "Its supply is algorithmically fixed at 21 million coins, unlike fiat currency which can be inflated at will."
+        ),
+        "category": "instruction-following",
+        "weight":   2,
+    },
+    {
+        "question": "List exactly 3 reasons to use SQLite over PostgreSQL for a small local application. Number them 1, 2, 3.",
+        "expect":   ["1", "2", "3", "file", "no server"],
+        "reject":   [],
+        "correction": (
+            "1. No server process required — SQLite is a file, not a daemon. "
+            "2. Zero configuration — no install, no users, no ports. "
+            "3. Portable — a single .db file is the entire database, easy to copy or back up."
+        ),
+        "category": "instruction-following",
+        "weight":   1,
+    },
 ]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def write_feedback(query: str, response: str, correction: str, session_id: str):
+    """Write a bad rating + correction directly to the feedback table for fine-tuning."""
+    if not DB_PATH.exists():
+        return
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(DB_PATH)
+        conn.execute(
+            """INSERT INTO feedback (session_id, query, response, rating, correction, timestamp)
+               VALUES (?, ?, ?, 'bad', ?, ?)""",
+            (f"trainer_{session_id}", query, response, correction,
+             datetime.now().isoformat()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"  ⚠️  Could not write feedback to DB: {exc}")
+
 
 def run_rain(query: str, timeout: int = 220) -> tuple[str, float]:
     """Run a query through Rain CLI. Returns (output, elapsed_seconds)."""
@@ -468,6 +864,8 @@ def main():
             entry["correction_response"] = corr_out[:400]
             stats["corrections"] += 1
             print(f"  ↩  Rain acknowledged ({corr_elapsed}s)")
+            # Write directly to feedback DB so finetune.py picks this up
+            write_feedback(q["question"], response, q["correction"], session_id)
 
         log_entries.append(entry)
         save_log(log_entries)

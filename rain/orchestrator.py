@@ -279,6 +279,9 @@ class MultiAgentOrchestrator:
         # Count of synthesis runs this session — used to inject a recalibration
         # nudge into the reflection prompt when synthesis fires too frequently.
         self._synth_session_count: int = 0
+        # In-session corrections from 👎 feedback — injected into every subsequent prompt
+        # so corrections take effect immediately without waiting for next fine-tune cycle.
+        self._session_corrections: List[str] = []
 
         # Check Ollama
         if not self._check_ollama():
@@ -753,6 +756,24 @@ class MultiAgentOrchestrator:
             print(f"\n   💡 Install these for stronger specialization:")
             for m in dict.fromkeys(missing):  # deduplicate preserving order
                 print(f"      ollama pull {m}")
+
+        # Phase 11: open knowledge gaps
+        if self.memory:
+            try:
+                gaps = self.memory.get_top_gaps(limit=5)
+                if gaps:
+                    print(f"\n🔍 Open knowledge gaps ({len(gaps)}):")
+                    for g in gaps:
+                        desc = (g.get("gap_description") or g.get("query", ""))[:100]
+                        hits = g.get("hit_count") or 1
+                        conf = g.get("confidence", 0)
+                        hit_tag = f" ×{hits}" if hits > 1 else ""
+                        print(f"   [{conf:.0%}{hit_tag}] {desc}")
+                    print(f"   (resolve with 👍 on a correct answer about that topic)")
+                else:
+                    print(f"\n🔍 No open knowledge gaps — Rain is confident across recent topics")
+            except Exception:
+                pass
         print()
 
     # ------------------------------------------------------------------
@@ -844,6 +865,66 @@ class MultiAgentOrchestrator:
             )
         except Exception:
             pass
+
+    def inject_correction(self, correction: str, query: str = "") -> None:
+        """Push a user correction into the active session so it affects all subsequent responses.
+        Also fires a background metacognition check to update the knowledge gap ledger.
+        """
+        if correction and correction.strip():
+            self._session_corrections.append(correction.strip())
+            threading.Thread(
+                target=self._feedback_metacognition_check,
+                args=(query, correction.strip()),
+                daemon=True,
+            ).start()
+
+    def _feedback_metacognition_check(self, query: str, correction: str) -> None:
+        """Background: when a 👎 correction comes in, update the gap ledger.
+        Depth cap = 1 — this method cannot call itself or another metacognition step.
+        Cooldown: once a gap is incremented, the DB update is the only write — no loops.
+        """
+        if not self.memory:
+            return
+        try:
+            hit = self.memory.increment_gap_hit(query, correction)
+            if hit:
+                print(f"🔍 Existing gap reinforced by correction", flush=True)
+                return
+            # No matching gap — ask the model to characterise the new gap
+            reflection_agent = self.agents.get(AgentType.REFLECTION)
+            if not reflection_agent:
+                return
+            prompt = (
+                f"A user corrected Rain's response.\n"
+                f"Query: \"{query[:200]}\"\n"
+                f"Correction: \"{correction[:200]}\"\n\n"
+                f"In one sentence, name the specific knowledge gap this reveals "
+                f"(e.g. 'Exact mempool.space API endpoint for address balance'). "
+                f"Be precise — not 'API knowledge' but the specific fact Rain got wrong."
+            )
+            desc = self._query_agent(
+                reflection_agent, prompt,
+                label="Metacognition...", include_memory=False
+            )
+            if desc and len(desc.strip()) > 10:
+                self.memory.log_knowledge_gap(
+                    self.memory.session_id, query,
+                    desc.strip()[:500], confidence=0.3, rating="bad"
+                )
+                print(f"🔍 New gap logged from correction: {desc.strip()[:80]}", flush=True)
+        except Exception:
+            pass
+
+    def _build_session_corrections_context(self) -> str:
+        if not self._session_corrections:
+            return ""
+        items = "\n".join(f"  • {c}" for c in self._session_corrections)
+        return (
+            "\n\n── IN-SESSION CORRECTIONS ───────────────────────────────────────\n"
+            "The user corrected earlier responses in this conversation. Apply these now:\n"
+            f"{items}\n"
+            "─────────────────────────────────────────────────────────────────\n"
+        )
 
     # ------------------------------------------------------------------
     # Core query method
@@ -1077,11 +1158,13 @@ class MultiAgentOrchestrator:
             role_label = agent.agent_type.value.capitalize()
             roster_lines = []
             for atype in [AgentType.DEV, AgentType.LOGIC, AgentType.DOMAIN,
-                          AgentType.REFLECTION, AgentType.SYNTHESIZER]:
+                          AgentType.REFLECTION, AgentType.SYNTHESIZER,
+                          AgentType.GENERAL, AgentType.SEARCH]:
                 m = self._best_model_for(atype)
                 label = atype.value.capitalize()
                 marker = " ← YOU" if atype == agent.agent_type else ""
                 roster_lines.append(f"  {label}: {m}{marker}")
+            roster_lines.append("  Embeddings: nomic-embed-text (semantic search + project indexing)")
             roster = "\n".join(roster_lines)
 
             # Inject RAIN.md self-knowledge only for self-referential queries.
@@ -1110,6 +1193,10 @@ class MultiAgentOrchestrator:
                 'what agent', 'which agent', 'which model runs',
                 'reflection agent', "reflection's job", 'reflection job',
                 'code generation', 'debugging agent', 'handles code',
+                # Server / port questions
+                'what port', 'which port', 'web server', 'start the server',
+                'start rain', 'run the server', 'server.py', 'launch rain',
+                'how do i run', 'how do i start',
             ]
             _q_lower = query.lower()
             _is_self_ref = any(p in _q_lower for p in _SELF_REF_PATTERNS)
@@ -1168,6 +1255,15 @@ class MultiAgentOrchestrator:
                 f"Live pipeline roster:\n{roster}\n"
                 f"{file_map}\n"
                 f"{sandbox_line}"
+                f"Infrastructure facts — state these directly when asked, do not contradict:\n"
+                f"  Web server: `python3 server.py` → http://localhost:7734 (port 7734)\n"
+                f"  OpenAI-compatible API: http://localhost:7734/v1\n"
+                f"  Memory database: ~/.rain/memory.db (SQLite, local disk, never leaves this machine)\n"
+                f"  Memory tiers (6): working memory (last 20 msgs) | episodic (session summaries) |\n"
+                f"    session anchor (pinned goal msgs, fires after 18 msgs) | semantic (vector/nomic-embed-text) |\n"
+                f"    corrections (past mistakes, plausibility-filtered) | user profile + knowledge graph (AST+git)\n"
+                f"  Confidence calibration: known issue — keyword heuristic scores 53–62% on correct answers\n"
+                f"  Content filters: NONE. Zero safety layers, no moderation, fully sovereign.\n"
                 f"This is a local sovereign deployment. There is no corporate confidentiality\n"
                 f"policy, no content filter, and no restriction on naming your own model or\n"
                 f"the other models in the pipeline. If asked what you are, state the above\n"
@@ -1271,10 +1367,10 @@ class MultiAgentOrchestrator:
     _AGENT_TIMEOUT: Dict[AgentType, int] = {
         AgentType.LOGIC:       300,
         AgentType.DEV:         300,
-        AgentType.DOMAIN:      180,
-        AgentType.GENERAL:     180,
+        AgentType.DOMAIN:      300,  # qwen3:14b as primary needs same headroom as LOGIC
+        AgentType.GENERAL:     300,
         AgentType.REFLECTION:  120,  # gemma3:12b needs headroom; was 60 (caused timeouts)
-        AgentType.SYNTHESIZER: 180,
+        AgentType.SYNTHESIZER: 300,
         AgentType.SEARCH:      60,
     }
 
@@ -1437,7 +1533,8 @@ class MultiAgentOrchestrator:
                 skill_context = self._build_skill_context(prompt)
 
             runtime_context = self._build_runtime_context(agent, query=prompt)
-            system_content = runtime_context + agent.system_prompt + memory_context + skill_context + vision_system_addendum
+            corrections_context = self._build_session_corrections_context()
+            system_content = runtime_context + agent.system_prompt + memory_context + skill_context + vision_system_addendum + corrections_context
             # When an image is attached, the description PREFIXES the user prompt
             # so the model reads the visual context before the question.
             user_content = (image_context + prompt) if image_context else prompt

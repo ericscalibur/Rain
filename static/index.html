@@ -3238,6 +3238,17 @@
                     <button class="feedback-btn bad" title="Bad response — leave a correction">👎</button>
                     <button class="speak-btn" title="Speak this response">🔊</button>`;
 
+                const reinforcementDiv = document.createElement("div");
+                reinforcementDiv.className = "feedback-correction";
+                reinforcementDiv.style.display = "none";
+                reinforcementDiv.innerHTML = `
+                    <div class="correction-label">What did Rain get right? (optional — helps fine-tuning)</div>
+                    <textarea class="correction-input" placeholder="This was spot-on because... / Especially helpful because..."></textarea>
+                    <div class="correction-actions">
+                        <button class="correction-skip">Skip (still logged)</button>
+                        <button class="correction-submit">Save</button>
+                    </div>`;
+
                 const correctionDiv = document.createElement("div");
                 correctionDiv.className = "feedback-correction";
                 correctionDiv.style.display = "none";
@@ -3250,18 +3261,31 @@
                     </div>`;
 
                 msg.appendChild(feedbackDiv);
+                msg.appendChild(reinforcementDiv);
                 msg.appendChild(correctionDiv);
 
                 feedbackDiv
                     .querySelector(".feedback-btn.good")
+                    .addEventListener("click", () => {
+                        reinforcementDiv.style.display = "block";
+                        reinforcementDiv.querySelector(".correction-input").focus();
+                    });
+                reinforcementDiv
+                    .querySelector(".correction-skip")
                     .addEventListener("click", async () => {
-                        await submitFeedback(
-                            capturedQuery,
-                            content,
-                            "good",
-                            null,
-                        );
+                        await submitFeedback(capturedQuery, content, "good", null);
                         feedbackDiv.innerHTML = `<span class="feedback-done">✅ Glad it helped</span>`;
+                        reinforcementDiv.style.display = "none";
+                    });
+                reinforcementDiv
+                    .querySelector(".correction-submit")
+                    .addEventListener("click", async () => {
+                        const reinforcement = reinforcementDiv
+                            .querySelector(".correction-input")
+                            .value.trim();
+                        await submitFeedback(capturedQuery, content, "good", reinforcement || null);
+                        feedbackDiv.innerHTML = `<span class="feedback-done">✅ Thanks — Rain will keep doing this</span>`;
+                        reinforcementDiv.style.display = "none";
                     });
                 feedbackDiv
                     .querySelector(".feedback-btn.bad")
@@ -3414,6 +3438,18 @@
                     <button class="speak-btn" title="Speak this response">🔊</button>
                 `;
 
+                const reinforcementDiv2 = document.createElement("div");
+                reinforcementDiv2.className = "feedback-correction";
+                reinforcementDiv2.style.display = "none";
+                reinforcementDiv2.innerHTML = `
+                    <div class="correction-label">What did Rain get right? (optional — helps fine-tuning)</div>
+                    <textarea class="correction-input" placeholder="This was spot-on because... / Especially helpful because..."></textarea>
+                    <div class="correction-actions">
+                        <button class="correction-skip">Skip (still logged)</button>
+                        <button class="correction-submit">Save</button>
+                    </div>
+                `;
+
                 const correctionDiv = document.createElement("div");
                 correctionDiv.className = "feedback-correction";
                 correctionDiv.style.display = "none";
@@ -3428,18 +3464,33 @@
 
                 const msgEl = wrapper.querySelector(".msg");
                 msgEl.appendChild(feedbackDiv);
+                msgEl.appendChild(reinforcementDiv2);
                 msgEl.appendChild(correctionDiv);
 
                 feedbackDiv
                     .querySelector(".feedback-btn.good")
+                    .addEventListener("click", () => {
+                        reinforcementDiv2.style.display = "block";
+                        reinforcementDiv2.querySelector(".correction-input").focus();
+                    });
+
+                reinforcementDiv2
+                    .querySelector(".correction-skip")
                     .addEventListener("click", async () => {
-                        await submitFeedback(
-                            capturedQuery,
-                            content,
-                            "good",
-                            null,
-                        );
+                        await submitFeedback(capturedQuery, content, "good", null);
                         feedbackDiv.innerHTML = `<span class="feedback-done">✅ Glad it helped</span>`;
+                        reinforcementDiv2.style.display = "none";
+                    });
+
+                reinforcementDiv2
+                    .querySelector(".correction-submit")
+                    .addEventListener("click", async () => {
+                        const reinforcement = reinforcementDiv2
+                            .querySelector(".correction-input")
+                            .value.trim();
+                        await submitFeedback(capturedQuery, content, "good", reinforcement || null);
+                        feedbackDiv.innerHTML = `<span class="feedback-done">✅ Thanks — Rain will keep doing this</span>`;
+                        reinforcementDiv2.style.display = "none";
                     });
 
                 feedbackDiv

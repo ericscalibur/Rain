@@ -143,7 +143,7 @@ The north star is this: *Rain should feel like working with a brilliant colleagu
 ### What is promised but not yet built:
 - Full autonomous long-running task support — give Rain a multi-hour goal and let it work unattended
 - Full skills runtime web UI — skill browser, one-click install from ClawHub in the chat interface
-- Voice interface (speech-to-text + text-to-speech, fully local) — Phase 8
+- Wake word detection ("Hey Rain") and `--voice` CLI flag — remaining Phase 8 items
 - Proactive intelligence — Rain surfaces insights without being asked
 - Metacognition & self-directed evolution — Phase 11
 - Sovereign identity and cross-device sync — Phase 12
@@ -480,7 +480,7 @@ You: curl localhost:7734/v1/chat/completions → OpenAI JSON ✅
 
 ---
 
-### Phase 8: Voice & Ambient Interface ⭐ AFTER PHASE 6B
+### Phase 8: Voice & Ambient Interface ✅ SUBSTANTIALLY COMPLETE
 *Claude has no voice. It can't hear you. Rain can fix both.*
 
 Text is not the natural medium for thought. The most important conversations — the ones where ideas come fastest — happen out loud. A sovereign AI companion that only exists in a chat box is missing the most human interface of all.
@@ -510,6 +510,11 @@ Text is not the natural medium for thought. The most important conversations —
 - Voice toggle in web UI settings panel — off by default, opt-in
 
 **Hardware note:** Whisper `base.en` model runs in real-time on any modern CPU. No GPU required.
+
+**What was actually built (April 2026):**
+- **STT** — `faster-whisper` or `openai-whisper` backend; lazy-loaded on first use; `/api/transcribe` endpoint in `server.py` accepts audio blob, returns transcript; mic toggle in web UI settings panel; `/api/voice-status` reports backend availability
+- **TTS** — browser Web Speech API (`window.speechSynthesis`); 🔊 button on every response; auto-TTS toggle in settings; `speakText()` / `cancelSpeech()` wired to streaming events so Rain speaks as response completes
+- **Remaining**: wake word detection ("Hey Rain") and `--voice` CLI flag not yet implemented
 
 ---
 

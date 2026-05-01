@@ -1445,6 +1445,21 @@ async def save_feedback(req: FeedbackRequest):
             _orchestrator._calibration_factors = _memory.get_calibration_factors()
         except Exception:
             pass
+    # Push correction into active session so it affects responses right away,
+    # not just the next fine-tune cycle. Also fires background metacognition.
+    if req.rating == "bad" and req.correction and _orchestrator:
+        try:
+            _orchestrator.inject_correction(req.correction, query=req.query)
+        except Exception:
+            pass
+    # Good feedback on a topic resolves matching open gaps — Rain learned it.
+    if req.rating == "good" and _memory:
+        try:
+            resolved = _memory.resolve_gaps_for_topic(req.query)
+            if resolved:
+                print(f"✅ {resolved} knowledge gap(s) resolved via 👍 feedback", flush=True)
+        except Exception:
+            pass
     return {"status": "ok"}
 
 
