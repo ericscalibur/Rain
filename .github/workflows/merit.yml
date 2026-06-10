@@ -1,0 +1,34 @@
+# Merit on Rain — pays contributors in sats when their PR merges.
+#
+# Save as: .github/workflows/merit.yml in the Rain repo
+#
+# Setup (from your own Merit README):
+# 1. Get your NWC connection string from Alby (Settings → Wallet → Connect)
+# 2. Rain repo → Settings → Secrets and variables → Actions → New repository secret
+#    Name:  NWC_CONNECTION_STRING
+#    Value: nostr+walletconnect://...
+# 3. Done. Zap with "⚡ 5000" in a PR comment, or add "bounty: 5000" labels to issues.
+#
+# Suggested launch move: open 3-5 issues on Rain with bounty labels
+# (e.g. the three "close these loops" items in Rain's own README are
+# perfect first bounties) and post about it on Nostr/X. Dogfooding Merit
+# on Rain is also Merit's best marketing.
+
+name: Merit
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  merit:
+    if: github.event.pull_request.merged == true  # required — never pay rejected PRs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ericscalibur/Merit@v1
+        with:
+          nwc-connection-string: ${{ secrets.NWC_CONNECTION_STRING }}
+          treasury-lightning-address: "ericscalibur@blink.sv"
