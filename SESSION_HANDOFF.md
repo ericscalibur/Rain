@@ -87,8 +87,8 @@ Phase 11 is substantially complete. If you consider the must-haves done, update 
 ### TurboQuant (Google Research)
 Evaluated this session. TurboQuant is KV-cache compression (PolarQuant 3-bit + QJL 1-bit error correction). Claims 6x KV-cache reduction, 8x throughput on H100 GPUs, no accuracy loss, no training required. **Not relevant to Rain today** — Rain runs 3–14B models single-query on M1 16GB; KV cache isn't the bottleneck. Bookmark for Phase 12 if Rain ever runs 70B+ models or multi-user concurrent sessions. Ollama may integrate it automatically in future.
 
-### Tier 3 semantic search gap identified
-Current `semantic_search()` has no minimum similarity threshold — top-3 results are always injected regardless of actual relevance score. As memory grows over months, completely irrelevant past exchanges will be injected if they happen to share any embedding direction with the query. Fix: add `min_similarity=0.25` floor to `semantic_search()` call in `_build_memory_context`. Small change, meaningful for long-running instances.
+### Tier 3 semantic search gap — RESOLVED (was stale when this doc was written)
+`semantic_search()` in `rain/memory.py` enforces `min_similarity=0.4` (default parameter, applied before the top-k cut — results below the floor are dropped, not padded). MemPalace `search()` in `rain/mem_palace.py` has its own `min_similarity=0.35` floor. Landed in commit 27745ab (2026-03-25). No action needed.
 
 ---
 
@@ -106,7 +106,7 @@ Current `semantic_search()` has no minimum similarity threshold — top-3 result
 **What's broken:**
 - Confidence deflation (53–62% on correct answers) → synthesis fires constantly → 2–4 min response times. Root cause: local models trained for completions, not epistemic calibration. Fix: reflection rubric, not `_score_confidence()`.
 - Fine-tuning loop built but never run. `finetune.py --full` has never been executed. All quality improvement to date is prompt-level. No weight updates.
-- Tier 3 similarity floor missing — top-3 always injected regardless of score.
+- ~~Tier 3 similarity floor missing~~ RESOLVED — `semantic_search()` defaults to `min_similarity=0.4` since 27745ab.
 - Correction deduplication doesn't exist — 10 corrections about the same mistake = 10 rows, growing noise.
 - Tool use reliability patch-worked, not fixed.
 
@@ -118,8 +118,8 @@ Current `semantic_search()` has no minimum similarity threshold — top-3 result
 
 ### Immediate (close existing loops)
 1. **Run the fine-tuning loop** — `python3 finetune.py --full`. First time Rain's weights reflect its own experience. Highest impact action available.
-2. **Fix reflection rubric** — grade on accuracy + epistemic honesty, not structure + completeness. One prompt edit. Fixes confidence deflation, cuts synthesis triggers, fastest responses get faster.
-3. **Tier 3 similarity floor** — `min_similarity=0.25` in orchestrator.py `_build_memory_context` semantic_search call. One line.
+2. **Fix reflection rubric** — ✅ DONE (PR #1, 2026-06-10): rubric reworked around accuracy + epistemic honesty + answers-the-question; structure/length explicitly ungraded; runtime VERDICT guide aligned. Benchmark: `scripts/benchmark_reflection_rubric.py`.
+3. **Tier 3 similarity floor** — ✅ ALREADY DONE (27745ab): `semantic_search()` enforces `min_similarity=0.4` default; MemPalace search has a 0.35 floor.
 4. **Correction deduplication** — background job distilling near-duplicate Tier 4 corrections into single authoritative rules.
 
 ### Near-term
@@ -137,7 +137,7 @@ Phase 8 (Voice): ✅ Already done — STT via faster-whisper + `/api/transcribe`
 - Streaming works but synthesis can't stream (falls back to full response)
 - Vision slow on first run (model load time)
 - GitHub API rate limit at 60 req/hr unauthenticated
-- Tier 3 semantic search has no minimum similarity floor (top-3 always injected)
+- ~~Tier 3 semantic search has no minimum similarity floor~~ RESOLVED — 0.4 floor in `semantic_search()`, 0.35 in MemPalace (27745ab)
 
 ## Eric's Setup
 - MacBook Pro M1, 16GB RAM, 712GB free disk
