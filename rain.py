@@ -758,6 +758,8 @@ def main():
                         help="Path to a project directory \u2014 injects relevant source code chunks into every query (Phase 7)")
     parser.add_argument("--meta", action="store_true",
                         help="Phase 11: run metacognition agent \u2014 generate a self-assessment report and exit")
+    parser.add_argument("--handoff", action="store_true",
+                        help="Regenerate the auto-generated runtime-state section of SESSION_HANDOFF.md from live data and exit")
     parser.add_argument("--heartbeat", action="store_true",
                         help="Run memory heartbeat \u2014 prune ghost sessions, deduplicate vectors, condense old history, close stale gaps")
     parser.add_argument("--quiet", "-Q", action="store_true",
@@ -871,6 +873,15 @@ def main():
         # --agents flag \u2014 just show roster and exit
         if args.agents:
             rain.print_agent_roster()
+            return
+
+        # --handoff flag \u2014 regenerate the runtime-state block in SESSION_HANDOFF.md and exit
+        if args.handoff:
+            from rain.handoff import generate_runtime_state, update_handoff_file
+            block = generate_runtime_state(rain, memory)
+            path = update_handoff_file(block)
+            print(block)
+            print(f"\n\u2705 Runtime state written to {path}")
             return
 
         # --meta flag \u2014 Phase 11 metacognition: generate self-assessment report and exit
